@@ -69,6 +69,12 @@ fn write_head_back(
 /// - `num_heads`: must divide `hidden` evenly
 ///
 /// Returns a `[seq_len, hidden]` tensor.
+///
+/// The flat parameter list mirrors the natural shape of self-attention
+/// weights (Q/K/V/O × weight/bias). Wrapping them in a struct would force
+/// every caller to construct one purely for the call — see `BertModel` for
+/// an example of how higher-level structs feed into this op.
+#[allow(clippy::too_many_arguments)]
 pub fn multi_head_attention(
     x: &Tensor,
     wq: &Tensor,

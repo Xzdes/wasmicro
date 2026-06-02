@@ -105,7 +105,10 @@ impl<'a> ModelFile<'a> {
         }
         let header_len =
             u64::from_le_bytes(bytes[0..8].try_into().expect("checked len above")) as usize;
-        if 8usize.checked_add(header_len).map_or(true, |end| end > bytes.len()) {
+        if 8usize
+            .checked_add(header_len)
+            .is_none_or(|end| end > bytes.len())
+        {
             return Err(Error::HeaderLengthOutOfBounds);
         }
         let header = &bytes[8..8 + header_len];

@@ -57,12 +57,14 @@ pub fn gelu_erf(x: &Tensor) -> Tensor {
 
 /// Polynomial approximation of `erf`. Maximum absolute error ~1.5e-7.
 fn erf_approx(x: f32) -> f32 {
-    // Abramowitz & Stegun 7.1.26
-    const A1: f32 = 0.254_829_592;
-    const A2: f32 = -0.284_496_736;
-    const A3: f32 = 1.421_413_741;
-    const A4: f32 = -1.453_152_027;
-    const A5: f32 = 1.061_405_429;
+    // Abramowitz & Stegun 7.1.26. Coefficients are truncated to the f32
+    // mantissa limit; the original 9-digit constants round to the same f32
+    // values, so numerical results are bit-identical.
+    const A1: f32 = 0.254_829_6;
+    const A2: f32 = -0.284_496_72;
+    const A3: f32 = 1.421_413_8;
+    const A4: f32 = -1.453_152_1;
+    const A5: f32 = 1.061_405_4;
     const P: f32 = 0.327_591_1;
 
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
