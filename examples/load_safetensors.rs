@@ -14,7 +14,7 @@ use std::env;
 use std::fs;
 use std::process::ExitCode;
 
-use wasmicro::{Dtype, ModelFile, Tensor, ops};
+use wasmicro::{ops, Dtype, ModelFile, Tensor};
 
 fn main() -> ExitCode {
     let arg = env::args().nth(1);
@@ -66,7 +66,10 @@ fn main() -> ExitCode {
                 in_features,
                 output.shape().as_slice()
             );
-            println!("first few outputs: {:?}", &output.data()[..output.numel().min(8)]);
+            println!(
+                "first few outputs: {:?}",
+                &output.data()[..output.numel().min(8)]
+            );
         }
     }
 

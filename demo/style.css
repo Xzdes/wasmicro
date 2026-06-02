@@ -88,7 +88,7 @@ h2 {
   align-items: center;
   margin: 12px 0;
 }
-input[type="number"], input[type="file"] {
+input[type="number"], input[type="file"], input[type="text"], textarea {
   font: inherit;
   background: var(--bg);
   color: var(--fg);
@@ -97,6 +97,16 @@ input[type="number"], input[type="file"] {
   padding: 6px 8px;
 }
 input[type="number"] { width: 80px; }
+input[type="text"] {
+  width: min(320px, 100%);
+}
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  margin: 12px 0;
+  resize: vertical;
+}
 
 button {
   font: inherit;

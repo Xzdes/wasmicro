@@ -42,16 +42,31 @@
       </section>
 
       <section class="card">
-        <h2>BERT inference</h2>
+        <h2>Semantic search</h2>
         <p>
-          To run a real model, drop a <code>model.safetensors</code> file in
-          and provide its config. Use <code>wasmicro-convert</code> to
-          download a model from HuggingFace.
+          Drop in <code>model.safetensors</code> and <code>vocab.txt</code>,
+          then rank documents by embedding similarity.
         </p>
         <div class="controls">
           <input type="file" id="model-file" accept=".safetensors" />
-          <button id="load-model" disabled>Load model</button>
+          <input type="file" id="vocab-file" accept=".txt" />
         </div>
+        <div class="controls">
+          <label>
+            query
+            <input type="text" id="query-text" value="hello world" />
+          </label>
+          <label>
+            max len
+            <input type="number" id="max-len" value="32" min="2" max="512" step="1" />
+          </label>
+          <button id="load-model" disabled>Load</button>
+          <button id="run-search" disabled>Search</button>
+        </div>
+        <textarea id="documents" rows="5">hello world
+tiny transformer inference
+browser embeddings with WebAssembly
+semantic search demo</textarea>
         <pre id="model-status">(no model loaded)</pre>
         <p class="hint">
           Default config: <code>all-MiniLM-L6-v2</code>

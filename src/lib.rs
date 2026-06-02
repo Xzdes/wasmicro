@@ -16,16 +16,20 @@
 //!
 //! ```no_run
 //! use std::fs;
-//! use wasmicro::{models::bert::{BertConfig, BertModel}, ModelFile};
+//! use wasmicro::{
+//!     models::bert::{BertConfig, BertModel},
+//!     ModelFile, WordPieceTokenizer,
+//! };
 //!
-//! let bytes = fs::read("model.safetensors").unwrap();
-//! let file = ModelFile::parse(&bytes).unwrap();
+//! let model_bytes = fs::read("model.safetensors").unwrap();
+//! let vocab_bytes = fs::read("vocab.txt").unwrap();
+//! let file = ModelFile::parse(&model_bytes).unwrap();
+//! let tokenizer = WordPieceTokenizer::from_vocab_bytes(&vocab_bytes).unwrap();
 //!
 //! let config = BertConfig::mini_lm_l6_v2();
 //! let model = BertModel::from_safetensors(&file, config, "").unwrap();
 //!
-//! let input_ids = vec![101u32, 7592, 102]; // [CLS] hello [SEP]
-//! let embedding = model.embed_sentence(&input_ids, None, None);
+//! let embedding = model.embed_text(&tokenizer, "hello world", 128).unwrap();
 //! println!("embedding dim: {:?}", embedding.shape().as_slice());
 //! ```
 
@@ -35,7 +39,9 @@ pub mod error;
 pub mod loader;
 pub mod models;
 pub mod ops;
+pub mod quant;
 pub mod tensor;
+pub mod tokenizer;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -43,4 +49,6 @@ pub mod wasm;
 // Re-exports for the most-used types.
 pub use error::{Error, Result};
 pub use loader::{Dtype, ModelFile, TensorView};
+pub use quant::{QuantizedTensorI8, QuantizedTensorQ4, QuantizedTensorU8};
 pub use tensor::{Shape, Tensor};
+pub use tokenizer::{EncodedInput, WordPieceOptions, WordPieceTokenizer};

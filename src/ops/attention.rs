@@ -38,12 +38,7 @@ fn extract_head(x: &Tensor, head_idx: usize, num_heads: usize) -> Tensor {
 
 /// Writes a per-head result `[seq_len, head_dim]` back into the correct
 /// columns of a `[seq_len, hidden]` flat buffer.
-fn write_head_back(
-    dst: &mut [f32],
-    head_result: &Tensor,
-    head_idx: usize,
-    num_heads: usize,
-) {
+fn write_head_back(dst: &mut [f32], head_result: &Tensor, head_idx: usize, num_heads: usize) {
     let shape = head_result.shape().as_slice();
     assert_eq!(shape.len(), 2, "write_head_back: head must be 2D");
     let seq_len = shape[0];
@@ -89,7 +84,6 @@ pub fn multi_head_attention(
 ) -> Tensor {
     let shape = x.shape().as_slice();
     assert_eq!(shape.len(), 2, "multi_head_attention: x must be 2D");
-    let seq_len = shape[0];
     let hidden = shape[1];
     assert!(
         hidden % num_heads == 0,
@@ -97,13 +91,53 @@ pub fn multi_head_attention(
         hidden,
         num_heads
     );
-    let head_dim = hidden / num_heads;
-    let scale_factor = 1.0 / (head_dim as f32).sqrt();
 
     let q = linear(x, wq, bq);
     let k = linear(x, wk, bk);
     let v = linear(x, wv, bv);
 
+    let concat = multi_head_attention_from_qkv(&q, &k, &v, num_heads);
+    linear(&concat, wo, bo)
+}
+
+/// Computes scaled dot-product multi-head attention from precomputed Q/K/V.
+///
+/// - `q`, `k`, `v`: shape `[seq_len, hidden]`
+/// - `num_heads`: must divide `hidden` evenly
+/// - returned tensor shape: `[seq_len, hidden]`
+pub fn multi_head_attention_from_qkv(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+) -> Tensor {
+    let q_shape = q.shape().as_slice();
+    let k_shape = k.shape().as_slice();
+    let v_shape = v.shape().as_slice();
+    assert_eq!(
+        q_shape.len(),
+        2,
+        "multi_head_attention_from_qkv: q must be 2D"
+    );
+    assert_eq!(
+        k_shape, q_shape,
+        "multi_head_attention_from_qkv: k shape mismatch"
+    );
+    assert_eq!(
+        v_shape, q_shape,
+        "multi_head_attention_from_qkv: v shape mismatch"
+    );
+
+    let seq_len = q_shape[0];
+    let hidden = q_shape[1];
+    assert!(
+        hidden % num_heads == 0,
+        "multi_head_attention_from_qkv: hidden ({}) must be divisible by num_heads ({})",
+        hidden,
+        num_heads
+    );
+    let head_dim = hidden / num_heads;
+    let scale_factor = 1.0 / (head_dim as f32).sqrt();
     let mut concat = vec![0.0f32; seq_len * hidden];
 
     for h in 0..num_heads {
@@ -119,8 +153,7 @@ pub fn multi_head_attention(
         write_head_back(&mut concat, &head_out, h, num_heads);
     }
 
-    let concat = Tensor::from_vec(concat, &[seq_len, hidden]);
-    linear(&concat, wo, bo)
+    Tensor::from_vec(concat, &[seq_len, hidden])
 }
 
 /// Mean-pools a `[seq_len, hidden]` tensor along the sequence dimension.
@@ -176,10 +209,7 @@ mod tests {
     fn extract_then_write_back_is_identity() {
         // hidden = 4, num_heads = 2 -> head_dim = 2
         // Build a [3, 4] tensor with distinct values per cell.
-        let x = Tensor::from_vec(
-            (0..12).map(|v| v as f32).collect(),
-            &[3, 4],
-        );
+        let x = Tensor::from_vec((0..12).map(|v| v as f32).collect(), &[3, 4]);
         let mut reconstructed = vec![0.0f32; 12];
         for h in 0..2 {
             let head = extract_head(&x, h, 2);

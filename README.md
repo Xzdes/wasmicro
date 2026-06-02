@@ -15,13 +15,19 @@ Pre-alpha. Working today:
   autograd, no training state.
 - **Forward ops.** `matmul`, `matmul_t_b`, `linear`, `embedding`, `softmax`,
   `layer_norm`, `relu`, `silu`, `gelu_tanh`, `gelu_erf`, elementwise math,
-  multi-head self-attention, mean pooling.
+  multi-head self-attention, mean pooling, and weight-only quantized linear
+  paths for `i8`, affine `u8`, and packed `q4` weights.
 - **BERT encoder.** Full forward pass against the HuggingFace BERT weight
-  layout (`bert-base-uncased`, `sentence-transformers/*`, etc.).
+  layout (`bert-base-uncased`, `sentence-transformers/*`, etc.). Linear
+  weights may be `F32`, `I8`, or affine `U8/q8` with companion scale tensors.
+- **WordPiece tokenizer.** `WordPieceTokenizer::from_vocab_bytes(&[u8])`
+  loads external `vocab.txt` bytes and produces `input_ids`,
+  `token_type_ids`, and `attention_mask`.
 - **Model loader.** `ModelFile::parse(&[u8])` reads safetensors with a
   hand-rolled JSON parser. No `serde`, no `serde_json` in the library.
 - **Converter CLI.** `wasmicro-convert <hf-model-id> <out-dir>` downloads
-  a model from the HuggingFace Hub and validates it.
+  a model from the HuggingFace Hub, validates it, and can write an `i8` or
+  `u8/q8` weight-only quantized BERT file.
 - **WASM build + demo.** GitHub Actions builds the WASM bundle and deploys
   a live demo page on every push to `main`.
 
@@ -45,24 +51,28 @@ Once it is published, **crates.io** will be the recommended path:
 
 ```toml
 [dependencies]
-wasmicro = "0.0.1"
+wasmicro = "0.1.0"
 ```
 
 Use it:
 
 ```rust
 use std::fs;
-use wasmicro::{models::bert::{BertConfig, BertModel}, ModelFile};
+use wasmicro::{
+    models::bert::{BertConfig, BertModel},
+    ModelFile, WordPieceTokenizer,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bytes = fs::read("model.safetensors")?;
-    let file = ModelFile::parse(&bytes)?;
+    let model_bytes = fs::read("model.safetensors")?;
+    let vocab_bytes = fs::read("vocab.txt")?;
 
+    let file = ModelFile::parse(&model_bytes)?;
+    let tokenizer = WordPieceTokenizer::from_vocab_bytes(&vocab_bytes)?;
     let config = BertConfig::mini_lm_l6_v2();
     let model = BertModel::from_safetensors(&file, config, "")?;
 
-    let input_ids = vec![101u32, 7592, 2088, 102]; // [CLS] hello world [SEP]
-    let embedding = model.embed_sentence(&input_ids, None, None);
+    let embedding = model.embed_text(&tokenizer, "hello world", 128)?;
 
     println!("embedding dim: {:?}", embedding.shape().as_slice());
     Ok(())
@@ -79,6 +89,12 @@ cargo build --release -p wasmicro-convert
 ./target/release/wasmicro-convert \
     sentence-transformers/all-MiniLM-L6-v2 \
     ./models/mini-lm
+
+# Optional: also write model.i8.safetensors with quantized BERT linear weights
+./target/release/wasmicro-convert \
+    sentence-transformers/all-MiniLM-L6-v2 \
+    ./models/mini-lm \
+    --quantize i8
 ```
 
 Output:
@@ -86,7 +102,9 @@ Output:
 ```
 models/mini-lm/
 ├── model.safetensors    (~ 87 MB, ready to pass to ModelFile::parse)
+├── model.i8.safetensors (optional, when --quantize i8 is used)
 ├── config.json
+├── vocab.txt
 └── tokenizer.json
 ```
 
@@ -98,9 +116,13 @@ cargo test --workspace
 cargo run --example load_safetensors
 
 # WASM bundle (browser, ES modules).
-wasm-pack build --release --target web --features wasm \
-    --out-dir demo/pkg --out-name wasmicro
-wasm-opt -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
+wasm-pack build --release --target web --no-opt \
+    --out-dir demo/pkg --out-name wasmicro --features wasm
+wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int -Oz \
+    demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
+
+# Repeatable size report for the WASM bundle and npm dry-run package.
+powershell -ExecutionPolicy Bypass -File tools/measure-size.ps1
 
 # Serve the demo locally
 cd demo && python -m http.server 8080
@@ -123,14 +145,17 @@ wasmicro/
 ├── src/                       # the library
 │   ├── lib.rs
 │   ├── tensor.rs              # owned f32 tensor + inline shape
+│   ├── tokenizer.rs           # minimal WordPiece tokenizer
+│   ├── quant.rs               # weight-only quantized storage types
 │   ├── loader.rs              # safetensors parser (no serde)
 │   ├── error.rs
-│   ├── ops/                   # forward ops: matmul, attention, layernorm, …
+│   ├── ops/                   # forward ops: matmul, attention, layernorm, ...
 │   ├── models/
 │   │   └── bert.rs            # BertModel + forward + from_safetensors
 │   └── wasm.rs                # wasm-bindgen surface (feature = "wasm")
 ├── tools/
-│   └── wasmicro-convert/      # CLI to download & validate HF models
+│   ├── wasmicro-convert/      # CLI to download & validate HF models
+│   └── measure-size.ps1       # WASM/npm size report
 ├── tests/                     # integration tests via the public API
 ├── examples/                  # runnable demos
 ├── demo/                      # static site for GitHub Pages
@@ -163,10 +188,14 @@ These are non-negotiable. Code that breaks them gets reverted.
 - [x] HuggingFace → wasmicro converter CLI
 - [x] CI + GitHub Pages deploy workflow
 - [x] WASM demo page
-- [ ] WordPiece tokenizer (so the demo can run end-to-end without pre-tokenized input)
+- [x] WordPiece tokenizer from external `vocab.txt`
+- [x] End-to-end semantic-search demo: text -> WordPiece -> BERT embeddings -> cosine ranking
+- [x] Weight-only quantized linear ops: `i8`, affine `u8`, packed `q4`
+- [x] Quantized BERT linear loading for `i8` and affine `u8/q8`
+- [x] Repeatable WASM/npm size measurement script
 - [ ] Real `all-MiniLM-L6-v2` semantic-search demo
+- [x] Converter quantization pipeline for BERT linear weights
 - [ ] WASM SIMD128 paths
-- [ ] int8 quantization
 - [ ] GPT-2 + KV-cache
 - [ ] WebGPU backend
 

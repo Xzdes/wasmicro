@@ -72,13 +72,16 @@ fn softmax_then_argmax_pipeline() {
     let probs = ops::softmax::softmax_last_dim(&logits);
 
     // Argmax = index of largest value (3.5 at index 3).
-    let (argmax, _) = probs
-        .data()
-        .iter()
-        .enumerate()
-        .fold((0, f32::NEG_INFINITY), |(best_i, best_v), (i, &v)| {
-            if v > best_v { (i, v) } else { (best_i, best_v) }
-        });
+    let (argmax, _) = probs.data().iter().enumerate().fold(
+        (0, f32::NEG_INFINITY),
+        |(best_i, best_v), (i, &v)| {
+            if v > best_v {
+                (i, v)
+            } else {
+                (best_i, best_v)
+            }
+        },
+    );
     assert_eq!(argmax, 3);
 
     let sum: f32 = probs.data().iter().sum();

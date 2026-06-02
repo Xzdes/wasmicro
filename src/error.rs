@@ -31,6 +31,8 @@ pub enum Error {
     UnevenLength,
     /// The declared tensor shape does not match the data byte length.
     ShapeDataMismatch,
+    /// The tokenizer vocabulary or tokenizer request is invalid.
+    InvalidTokenizer(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -47,6 +49,7 @@ impl fmt::Display for Error {
             Self::Alignment => write!(f, "tensor data is not aligned for the requested type"),
             Self::UnevenLength => write!(f, "tensor byte length is not a multiple of element size"),
             Self::ShapeDataMismatch => write!(f, "declared shape does not match data length"),
+            Self::InvalidTokenizer(s) => write!(f, "invalid tokenizer: {}", s),
         }
     }
 }

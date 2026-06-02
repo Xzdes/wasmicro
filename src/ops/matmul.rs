@@ -21,8 +21,18 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let a_shape = a.shape().as_slice();
     let b_shape = b.shape().as_slice();
 
-    assert_eq!(a_shape.len(), 2, "matmul: `a` must be 2D, got {:?}", a_shape);
-    assert_eq!(b_shape.len(), 2, "matmul: `b` must be 2D, got {:?}", b_shape);
+    assert_eq!(
+        a_shape.len(),
+        2,
+        "matmul: `a` must be 2D, got {:?}",
+        a_shape
+    );
+    assert_eq!(
+        b_shape.len(),
+        2,
+        "matmul: `b` must be 2D, got {:?}",
+        b_shape
+    );
     assert_eq!(
         a_shape[1], b_shape[0],
         "matmul: inner dimensions must match: {:?} @ {:?}",
@@ -64,8 +74,18 @@ pub fn matmul_t_b(a: &Tensor, b: &Tensor) -> Tensor {
     let a_shape = a.shape().as_slice();
     let b_shape = b.shape().as_slice();
 
-    assert_eq!(a_shape.len(), 2, "matmul_t_b: `a` must be 2D, got {:?}", a_shape);
-    assert_eq!(b_shape.len(), 2, "matmul_t_b: `b` must be 2D, got {:?}", b_shape);
+    assert_eq!(
+        a_shape.len(),
+        2,
+        "matmul_t_b: `a` must be 2D, got {:?}",
+        a_shape
+    );
+    assert_eq!(
+        b_shape.len(),
+        2,
+        "matmul_t_b: `b` must be 2D, got {:?}",
+        b_shape
+    );
     assert_eq!(
         a_shape[1], b_shape[1],
         "matmul_t_b: inner dimensions must match: {:?} @ {:?}^T",

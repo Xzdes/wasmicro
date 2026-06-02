@@ -15,15 +15,18 @@
 //! [`BertModel::embed_sentence`], which calls `forward` followed by mean
 //! pooling. Pass an `attention_mask` to ignore padding positions.
 
-use crate::error::Result;
-use crate::loader::ModelFile;
+use crate::error::{Error, Result};
+use crate::loader::{Dtype, ModelFile};
 use crate::ops::activations::gelu_erf;
-use crate::ops::attention::{mean_pool, multi_head_attention};
+use crate::ops::attention::{mean_pool, multi_head_attention_from_qkv};
 use crate::ops::elementwise::add;
 use crate::ops::embedding::embedding;
 use crate::ops::layernorm::layer_norm;
 use crate::ops::linear::linear;
+use crate::ops::quantized::{linear_i8, linear_u8};
+use crate::quant::{QuantizedTensorI8, QuantizedTensorU8};
 use crate::tensor::Tensor;
+use crate::tokenizer::WordPieceTokenizer;
 
 /// Architectural hyperparameters for a BERT encoder.
 ///
@@ -92,27 +95,33 @@ struct BertEmbeddings {
     ln_beta: Tensor,
 }
 
+enum LinearWeight {
+    F32(Tensor),
+    I8(QuantizedTensorI8),
+    U8(QuantizedTensorU8),
+}
+
 struct BertSelfAttention {
-    wq: Tensor,
+    wq: LinearWeight,
     bq: Tensor,
-    wk: Tensor,
+    wk: LinearWeight,
     bk: Tensor,
-    wv: Tensor,
+    wv: LinearWeight,
     bv: Tensor,
 }
 
 struct BertAttention {
     self_attn: BertSelfAttention,
-    wo: Tensor,
+    wo: LinearWeight,
     bo: Tensor,
     ln_gamma: Tensor,
     ln_beta: Tensor,
 }
 
 struct BertFeedForward {
-    w_inter: Tensor,
+    w_inter: LinearWeight,
     b_inter: Tensor,
-    w_out: Tensor,
+    w_out: LinearWeight,
     b_out: Tensor,
     ln_gamma: Tensor,
     ln_beta: Tensor,
@@ -151,8 +160,32 @@ impl BertModel {
             format!("{prefix}.")
         };
 
-        let load = |name: &str| -> Result<Tensor> {
-            file.get(&format!("{p}{name}"))?.to_tensor()
+        let load = |name: &str| -> Result<Tensor> { file.get(&format!("{p}{name}"))?.to_tensor() };
+        let load_linear = |name: &str| -> Result<LinearWeight> {
+            let full_name = format!("{p}{name}");
+            let view = file.get(&full_name)?;
+            match view.dtype {
+                Dtype::F32 => Ok(LinearWeight::F32(view.to_tensor()?)),
+                Dtype::I8 => {
+                    let scale_name = format!("{full_name}.scale");
+                    Ok(LinearWeight::I8(QuantizedTensorI8::from_safetensors(
+                        file,
+                        &full_name,
+                        &scale_name,
+                    )?))
+                }
+                Dtype::U8 => {
+                    let scale_name = format!("{full_name}.scale");
+                    let zero_point_name = format!("{full_name}.zero_point");
+                    Ok(LinearWeight::U8(QuantizedTensorU8::from_safetensors(
+                        file,
+                        &full_name,
+                        &scale_name,
+                        &zero_point_name,
+                    )?))
+                }
+                _ => Err(Error::DtypeMismatch),
+            }
         };
 
         let embeddings = BertEmbeddings {
@@ -165,29 +198,31 @@ impl BertModel {
 
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for i in 0..config.num_hidden_layers {
-            let load_l = |suffix: &str| -> Result<Tensor> {
-                load(&format!("encoder.layer.{i}.{suffix}"))
+            let load_l =
+                |suffix: &str| -> Result<Tensor> { load(&format!("encoder.layer.{i}.{suffix}")) };
+            let load_linear_l = |suffix: &str| -> Result<LinearWeight> {
+                load_linear(&format!("encoder.layer.{i}.{suffix}"))
             };
 
             let layer = BertLayer {
                 attention: BertAttention {
                     self_attn: BertSelfAttention {
-                        wq: load_l("attention.self.query.weight")?,
+                        wq: load_linear_l("attention.self.query.weight")?,
                         bq: load_l("attention.self.query.bias")?,
-                        wk: load_l("attention.self.key.weight")?,
+                        wk: load_linear_l("attention.self.key.weight")?,
                         bk: load_l("attention.self.key.bias")?,
-                        wv: load_l("attention.self.value.weight")?,
+                        wv: load_linear_l("attention.self.value.weight")?,
                         bv: load_l("attention.self.value.bias")?,
                     },
-                    wo: load_l("attention.output.dense.weight")?,
+                    wo: load_linear_l("attention.output.dense.weight")?,
                     bo: load_l("attention.output.dense.bias")?,
                     ln_gamma: load_l("attention.output.LayerNorm.weight")?,
                     ln_beta: load_l("attention.output.LayerNorm.bias")?,
                 },
                 ffn: BertFeedForward {
-                    w_inter: load_l("intermediate.dense.weight")?,
+                    w_inter: load_linear_l("intermediate.dense.weight")?,
                     b_inter: load_l("intermediate.dense.bias")?,
-                    w_out: load_l("output.dense.weight")?,
+                    w_out: load_linear_l("output.dense.weight")?,
                     b_out: load_l("output.dense.bias")?,
                     ln_gamma: load_l("output.LayerNorm.weight")?,
                     ln_beta: load_l("output.LayerNorm.bias")?,
@@ -263,22 +298,45 @@ impl BertModel {
         let hidden = self.forward(input_ids, token_type_ids);
         mean_pool(&hidden, attention_mask)
     }
+
+    /// Convenience: tokenize one text, run the encoder, and mean-pool.
+    ///
+    /// `max_len` includes `[CLS]` and `[SEP]`. The tokenizer output is not
+    /// padded, so the encoder only runs over real tokens.
+    pub fn embed_text(
+        &self,
+        tokenizer: &WordPieceTokenizer,
+        text: &str,
+        max_len: usize,
+    ) -> Result<Tensor> {
+        let encoded = tokenizer.encode(text, max_len)?;
+        Ok(self.embed_sentence(
+            &encoded.input_ids,
+            Some(&encoded.token_type_ids),
+            Some(&encoded.attention_mask),
+        ))
+    }
 }
 
 fn encoder_layer_forward(x: &Tensor, layer: &BertLayer, config: &BertConfig) -> Tensor {
     // Attention block.
-    let attn = multi_head_attention(
+    let q = linear_weight(
         x,
         &layer.attention.self_attn.wq,
         Some(&layer.attention.self_attn.bq),
+    );
+    let k = linear_weight(
+        x,
         &layer.attention.self_attn.wk,
         Some(&layer.attention.self_attn.bk),
+    );
+    let v = linear_weight(
+        x,
         &layer.attention.self_attn.wv,
         Some(&layer.attention.self_attn.bv),
-        &layer.attention.wo,
-        Some(&layer.attention.bo),
-        config.num_attention_heads,
     );
+    let attn = multi_head_attention_from_qkv(&q, &k, &v, config.num_attention_heads);
+    let attn = linear_weight(&attn, &layer.attention.wo, Some(&layer.attention.bo));
     let residual = add(x, &attn);
     let post_attn = layer_norm(
         &residual,
@@ -288,9 +346,9 @@ fn encoder_layer_forward(x: &Tensor, layer: &BertLayer, config: &BertConfig) -> 
     );
 
     // Feed-forward block.
-    let inter = linear(&post_attn, &layer.ffn.w_inter, Some(&layer.ffn.b_inter));
+    let inter = linear_weight(&post_attn, &layer.ffn.w_inter, Some(&layer.ffn.b_inter));
     let inter = gelu_erf(&inter);
-    let proj = linear(&inter, &layer.ffn.w_out, Some(&layer.ffn.b_out));
+    let proj = linear_weight(&inter, &layer.ffn.w_out, Some(&layer.ffn.b_out));
     let residual = add(&post_attn, &proj);
     layer_norm(
         &residual,
@@ -298,6 +356,14 @@ fn encoder_layer_forward(x: &Tensor, layer: &BertLayer, config: &BertConfig) -> 
         &layer.ffn.ln_beta,
         config.layer_norm_eps,
     )
+}
+
+fn linear_weight(x: &Tensor, weight: &LinearWeight, bias: Option<&Tensor>) -> Tensor {
+    match weight {
+        LinearWeight::F32(w) => linear(x, w, bias),
+        LinearWeight::I8(w) => linear_i8(x, w, bias),
+        LinearWeight::U8(w) => linear_u8(x, w, bias),
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +390,7 @@ mod tests {
             let n: usize = shape.iter().product();
             Tensor::from_vec(vec![0.01f32; n], shape)
         };
+        let linear_ones = |shape: &[usize]| LinearWeight::F32(ones(shape));
         let one_vec = |n: usize| Tensor::from_vec(vec![1.0f32; n], &[n]);
         let zero_vec = |n: usize| Tensor::from_vec(vec![0.0f32; n], &[n]);
 
@@ -340,22 +407,22 @@ mod tests {
             layers.push(BertLayer {
                 attention: BertAttention {
                     self_attn: BertSelfAttention {
-                        wq: ones(&[hidden, hidden]),
+                        wq: linear_ones(&[hidden, hidden]),
                         bq: zero_vec(hidden),
-                        wk: ones(&[hidden, hidden]),
+                        wk: linear_ones(&[hidden, hidden]),
                         bk: zero_vec(hidden),
-                        wv: ones(&[hidden, hidden]),
+                        wv: linear_ones(&[hidden, hidden]),
                         bv: zero_vec(hidden),
                     },
-                    wo: ones(&[hidden, hidden]),
+                    wo: linear_ones(&[hidden, hidden]),
                     bo: zero_vec(hidden),
                     ln_gamma: one_vec(hidden),
                     ln_beta: zero_vec(hidden),
                 },
                 ffn: BertFeedForward {
-                    w_inter: ones(&[inter, hidden]),
+                    w_inter: linear_ones(&[inter, hidden]),
                     b_inter: zero_vec(inter),
-                    w_out: ones(&[hidden, inter]),
+                    w_out: linear_ones(&[hidden, inter]),
                     b_out: zero_vec(hidden),
                     ln_gamma: one_vec(hidden),
                     ln_beta: zero_vec(hidden),
@@ -363,7 +430,14 @@ mod tests {
             });
         }
 
-        (config, BertModel { config, embeddings, layers })
+        (
+            config,
+            BertModel {
+                config,
+                embeddings,
+                layers,
+            },
+        )
     }
 
     #[test]
@@ -400,6 +474,18 @@ mod tests {
         assert_eq!(masked.shape().as_slice(), unmasked.shape().as_slice());
         for &v in masked.data() {
             assert!(v.is_finite());
+        }
+    }
+
+    #[test]
+    fn embed_text_uses_tokenizer_output() {
+        let (config, model) = tiny_bert();
+        let vocab = b"[PAD]\n[UNK]\n[CLS]\n[SEP]\n[MASK]\nhello\n";
+        let tokenizer = WordPieceTokenizer::from_vocab_bytes(vocab).unwrap();
+        let embedding = model.embed_text(&tokenizer, "hello", 8).unwrap();
+        assert_eq!(embedding.shape().as_slice(), &[config.hidden_size]);
+        for &v in embedding.data() {
+            assert!(v.is_finite(), "non-finite embedding: {}", v);
         }
     }
 }

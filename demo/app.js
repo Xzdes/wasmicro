@@ -9,6 +9,7 @@ import init, {
   matmul_bench,
   init_panic_hook,
   WasmBertModel,
+  WasmWordPieceTokenizer,
 } from "./pkg/wasmicro.js";
 
 const $ = (id) => document.getElementById(id);
@@ -62,22 +63,49 @@ async function main() {
 
   // 3. BERT model loading.
   let modelBytes = null;
+  let vocabBytes = null;
+  let model = null;
+  let tokenizer = null;
+
+  const refreshLoadButton = () => {
+    $("load-model").disabled = !(modelBytes && vocabBytes);
+  };
+
+  const resetLoadedModel = () => {
+    model = null;
+    tokenizer = null;
+    $("run-search").disabled = true;
+  };
+
   $("model-file").addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    resetLoadedModel();
     modelBytes = new Uint8Array(await file.arrayBuffer());
     $("model-status").textContent =
       `selected: ${file.name} (${(modelBytes.byteLength / 1024 / 1024).toFixed(2)} MB)\n` +
-      "click Load model to parse.";
-    $("load-model").disabled = false;
+      "select vocab.txt, then click Load.";
+    refreshLoadButton();
+  });
+
+  $("vocab-file").addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    resetLoadedModel();
+    vocabBytes = new Uint8Array(await file.arrayBuffer());
+    $("model-status").textContent =
+      `selected: ${file.name} (${(vocabBytes.byteLength / 1024).toFixed(1)} KB)\n` +
+      "select model.safetensors, then click Load.";
+    refreshLoadButton();
   });
 
   $("load-model").addEventListener("click", () => {
-    if (!modelBytes) return;
+    if (!modelBytes || !vocabBytes) return;
     try {
       // Hardcoded to all-MiniLM-L6-v2 config for the demo.
       const t0 = performance.now();
-      const model = new WasmBertModel(
+      tokenizer = new WasmWordPieceTokenizer(vocabBytes, true);
+      model = new WasmBertModel(
         modelBytes,
         /* hidden_size            */ 384,
         /* num_hidden_layers      */ 6,
@@ -90,22 +118,77 @@ async function main() {
       );
       const t1 = performance.now();
 
-      // Run a tiny inference on dummy input ids (just to prove the pipeline works).
-      const ids = new Uint32Array([101, 7592, 2088, 102]); // [CLS] hello world [SEP]
+      $("run-search").disabled = false;
+      $("model-status").textContent = [
+        `loaded in ${(t1 - t0).toFixed(1)} ms`,
+        "ready for semantic search",
+      ].join("\n");
+    } catch (err) {
+      resetLoadedModel();
+      $("model-status").textContent = `error: ${err.message ?? err}`;
+    }
+  });
+
+  $("run-search").addEventListener("click", () => {
+    if (!model || !tokenizer) return;
+    try {
+      const text = $("query-text").value || "hello world";
+      const maxLen = Number($("max-len").value) || 32;
       const t2 = performance.now();
-      const emb = model.embed(ids);
+      const queryEmbedding = normalize(model.embed_text(tokenizer, text, maxLen));
+      const documents = $("documents")
+        .value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      const results = documents.map((document, index) => {
+        const embedding = normalize(model.embed_text(tokenizer, document, maxLen));
+        return {
+          index,
+          document,
+          score: dot(queryEmbedding, embedding),
+        };
+      });
+      results.sort((a, b) => b.score - a.score);
       const t3 = performance.now();
 
       $("model-status").textContent = [
-        `loaded in ${(t1 - t0).toFixed(1)} ms`,
-        `inference on ${ids.length} tokens: ${(t3 - t2).toFixed(1)} ms`,
-        `embedding dim: ${emb.length}`,
-        `first 8 values: ${[...emb.slice(0, 8)].map((v) => v.toFixed(4)).join(", ")}`,
+        `query: "${text}"`,
+        `documents: ${documents.length}`,
+        `search time: ${(t3 - t2).toFixed(1)} ms`,
+        "",
+        ...results.map(
+          (result, rank) =>
+            `${rank + 1}. score=${result.score.toFixed(4)} doc#${result.index + 1}: ${result.document}`,
+        ),
       ].join("\n");
     } catch (err) {
       $("model-status").textContent = `error: ${err.message ?? err}`;
     }
   });
+}
+
+function dot(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) {
+    sum += a[i] * b[i];
+  }
+  return sum;
+}
+
+function normalize(vector) {
+  let norm = 0;
+  for (const value of vector) {
+    norm += value * value;
+  }
+  norm = Math.sqrt(norm);
+  if (norm === 0) return vector;
+  const out = new Float32Array(vector.length);
+  for (let i = 0; i < vector.length; i++) {
+    out[i] = vector[i] / norm;
+  }
+  return out;
 }
 
 main();

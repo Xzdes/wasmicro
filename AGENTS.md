@@ -132,9 +132,10 @@ cargo test  --workspace
 cargo check --target wasm32-unknown-unknown --features wasm
 
 # Build the WASM bundle for a browser
-wasm-pack build --release --target web --features wasm \
-    --out-dir demo/pkg --out-name wasmicro
-wasm-opt -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
+wasm-pack build --release --target web --no-opt \
+    --out-dir demo/pkg --out-name wasmicro --features wasm
+wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int -Oz \
+    demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
 
 # Build the converter
 cargo build --release -p wasmicro-convert

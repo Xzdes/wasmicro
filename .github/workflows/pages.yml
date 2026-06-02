@@ -40,12 +40,13 @@ jobs:
           wasm-pack build \
             --release \
             --target web \
-            --features wasm \
+            --no-opt \
             --out-dir demo/pkg \
-            --out-name wasmicro
+            --out-name wasmicro \
+            --features wasm
 
       - name: Optimize WASM size
-        run: wasm-opt -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
+        run: wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
 
       - name: Report bundle size
         run: |

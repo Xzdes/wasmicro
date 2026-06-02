@@ -64,7 +64,12 @@ pub fn scale(a: &Tensor, scalar: f32) -> Tensor {
 pub fn add_bias(x: &Tensor, bias: &Tensor) -> Tensor {
     let x_shape = x.shape().as_slice();
     let b_shape = bias.shape().as_slice();
-    assert_eq!(b_shape.len(), 1, "add_bias: bias must be 1D, got {:?}", b_shape);
+    assert_eq!(
+        b_shape.len(),
+        1,
+        "add_bias: bias must be 1D, got {:?}",
+        b_shape
+    );
     let n = b_shape[0];
     assert_eq!(
         *x_shape.last().expect("add_bias: x must be non-scalar"),

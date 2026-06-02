@@ -17,6 +17,50 @@ fn f32_le(values: &[f32]) -> Vec<u8> {
     out
 }
 
+fn write_safetensors_entries(entries: &[(String, &'static str, Vec<usize>, Vec<u8>)]) -> Vec<u8> {
+    let mut header = String::from("{");
+    let mut offset = 0usize;
+    let mut payload = Vec::new();
+    for (i, (name, dtype, shape, bytes)) in entries.iter().enumerate() {
+        if i > 0 {
+            header.push(',');
+        }
+        let shape_csv = shape
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let len = bytes.len();
+        header.push_str(&format!(
+            r#""{name}":{{"dtype":"{dtype}","shape":[{shape_csv}],"data_offsets":[{offset},{end}]}}"#,
+            end = offset + len,
+        ));
+        offset += len;
+        payload.extend_from_slice(bytes);
+    }
+    header.push('}');
+
+    let header_bytes = header.into_bytes();
+    let mut out = Vec::new();
+    out.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(&header_bytes);
+    out.extend_from_slice(&payload);
+    out
+}
+
+fn is_bert_linear_weight_name(name: &str) -> bool {
+    [
+        "attention.self.query.weight",
+        "attention.self.key.weight",
+        "attention.self.value.weight",
+        "attention.output.dense.weight",
+        "intermediate.dense.weight",
+        "output.dense.weight",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
+}
+
 /// Builds a safetensors file containing every tensor BERT expects.
 /// `prefix` is prepended to every tensor name (joined with a `.`); pass `""`
 /// for sentence-transformers-style saves with no prefix.
@@ -123,6 +167,88 @@ fn synthetic_bert_safetensors(config: &BertConfig, prefix: &str) -> Vec<u8> {
     out
 }
 
+fn synthetic_bert_i8_linear_safetensors(config: &BertConfig, prefix: &str) -> Vec<u8> {
+    let h = config.hidden_size;
+    let inter = config.intermediate_size;
+    let p = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}.")
+    };
+
+    let mut names: Vec<(String, Vec<usize>)> = Vec::new();
+    let push = |entries: &mut Vec<(String, Vec<usize>)>, name: &str, shape: Vec<usize>| {
+        entries.push((format!("{p}{name}"), shape));
+    };
+
+    push(
+        &mut names,
+        "embeddings.word_embeddings.weight",
+        vec![config.vocab_size, h],
+    );
+    push(
+        &mut names,
+        "embeddings.position_embeddings.weight",
+        vec![config.max_position_embeddings, h],
+    );
+    push(
+        &mut names,
+        "embeddings.token_type_embeddings.weight",
+        vec![config.type_vocab_size, h],
+    );
+    push(&mut names, "embeddings.LayerNorm.weight", vec![h]);
+    push(&mut names, "embeddings.LayerNorm.bias", vec![h]);
+
+    for i in 0..config.num_hidden_layers {
+        let layer_entries = [
+            ("attention.self.query.weight", vec![h, h]),
+            ("attention.self.query.bias", vec![h]),
+            ("attention.self.key.weight", vec![h, h]),
+            ("attention.self.key.bias", vec![h]),
+            ("attention.self.value.weight", vec![h, h]),
+            ("attention.self.value.bias", vec![h]),
+            ("attention.output.dense.weight", vec![h, h]),
+            ("attention.output.dense.bias", vec![h]),
+            ("attention.output.LayerNorm.weight", vec![h]),
+            ("attention.output.LayerNorm.bias", vec![h]),
+            ("intermediate.dense.weight", vec![inter, h]),
+            ("intermediate.dense.bias", vec![inter]),
+            ("output.dense.weight", vec![h, inter]),
+            ("output.dense.bias", vec![h]),
+            ("output.LayerNorm.weight", vec![h]),
+            ("output.LayerNorm.bias", vec![h]),
+        ];
+        for (suffix, shape) in layer_entries {
+            push(&mut names, &format!("encoder.layer.{i}.{suffix}"), shape);
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (name, shape) in names {
+        let n: usize = shape.iter().product();
+        if is_bert_linear_weight_name(&name) {
+            entries.push((name.clone(), "I8", shape.clone(), vec![1u8; n]));
+            entries.push((
+                format!("{name}.scale"),
+                "F32",
+                vec![shape[0]],
+                f32_le(&vec![0.01; shape[0]]),
+            ));
+        } else {
+            let values = if name.ends_with("LayerNorm.weight") {
+                vec![1.0; n]
+            } else if name.ends_with(".bias") {
+                vec![0.0; n]
+            } else {
+                vec![0.01; n]
+            };
+            entries.push((name, "F32", shape, f32_le(&values)));
+        }
+    }
+
+    write_safetensors_entries(&entries)
+}
+
 #[test]
 fn bert_from_safetensors_runs_forward() {
     let config = BertConfig {
@@ -150,6 +276,30 @@ fn bert_from_safetensors_runs_forward() {
     let emb = model.embed_sentence(&ids, None, None);
     assert_eq!(emb.shape().as_slice(), &[config.hidden_size]);
     for &v in emb.data() {
+        assert!(v.is_finite(), "non-finite embedding: {v}");
+    }
+}
+
+#[test]
+fn bert_loads_i8_linear_weights() {
+    let config = BertConfig {
+        hidden_size: 8,
+        num_hidden_layers: 2,
+        num_attention_heads: 2,
+        intermediate_size: 16,
+        vocab_size: 32,
+        max_position_embeddings: 32,
+        type_vocab_size: 2,
+        layer_norm_eps: 1e-12,
+    };
+
+    let bytes = synthetic_bert_i8_linear_safetensors(&config, "");
+    let file = ModelFile::parse(&bytes).expect("parse quantized safetensors");
+    let model = BertModel::from_safetensors(&file, config, "").expect("build quantized BertModel");
+    let embedding = model.embed_sentence(&[1, 2, 3, 4], None, None);
+
+    assert_eq!(embedding.shape().as_slice(), &[config.hidden_size]);
+    for v in embedding.data() {
         assert!(v.is_finite(), "non-finite embedding: {v}");
     }
 }

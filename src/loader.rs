@@ -183,6 +183,30 @@ impl<'a> TensorView<'a> {
         })
     }
 
+    /// Returns the tensor data as `&[i8]` without copying.
+    ///
+    /// Fails if the dtype is not `I8`.
+    pub fn as_i8(&self) -> Result<&'a [i8]> {
+        if self.dtype != Dtype::I8 {
+            return Err(Error::DtypeMismatch);
+        }
+        bytemuck::try_cast_slice::<u8, i8>(self.raw).map_err(|e| match e {
+            bytemuck::PodCastError::OutputSliceWouldHaveSlop
+            | bytemuck::PodCastError::SizeMismatch => Error::UnevenLength,
+            _ => Error::Alignment,
+        })
+    }
+
+    /// Returns the tensor data as `&[u8]` without copying.
+    ///
+    /// Fails if the dtype is not `U8`.
+    pub fn as_u8(&self) -> Result<&'a [u8]> {
+        if self.dtype != Dtype::U8 {
+            return Err(Error::DtypeMismatch);
+        }
+        Ok(self.raw)
+    }
+
     /// Allocates an owned [`Tensor`] from this view (F32 only).
     ///
     /// Falls back to a manual little-endian copy if the underlying bytes
@@ -401,10 +425,7 @@ impl<'a> Cursor<'a> {
 
     fn skip_number(&mut self) -> Result<()> {
         while let Some(b) = self.peek() {
-            if matches!(
-                b,
-                b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
-            ) {
+            if matches!(b, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E') {
                 self.pos += 1;
             } else {
                 break;
@@ -632,7 +653,10 @@ mod tests {
     #[test]
     fn truncated_file_is_rejected() {
         let short = vec![0u8; 4];
-        assert!(matches!(ModelFile::parse(&short), Err(Error::HeaderTooShort)));
+        assert!(matches!(
+            ModelFile::parse(&short),
+            Err(Error::HeaderTooShort)
+        ));
     }
 
     #[test]

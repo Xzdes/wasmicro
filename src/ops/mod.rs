@@ -15,4 +15,5 @@ pub mod embedding;
 pub mod layernorm;
 pub mod linear;
 pub mod matmul;
+pub mod quantized;
 pub mod softmax;

@@ -8,7 +8,9 @@ use crate::tensor::Tensor;
 /// Output has the same shape as input.
 pub fn softmax_last_dim(x: &Tensor) -> Tensor {
     let shape = x.shape().as_slice();
-    let n = *shape.last().expect("softmax_last_dim: x must be non-scalar");
+    let n = *shape
+        .last()
+        .expect("softmax_last_dim: x must be non-scalar");
     let data = x.data();
     let mut out = vec![0.0f32; data.len()];
 
