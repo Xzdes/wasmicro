@@ -1,0 +1,46 @@
+//! # wasmicro
+//!
+//! Tiny transformer inference for the web. One file. No build step.
+//!
+//! ## Design rules
+//!
+//! 1. Tiny WASM bundle (target: < 250 KB after `wasm-opt -Oz`).
+//! 2. Fast cold start (target: < 500 ms model load + first inference).
+//! 3. Forward inference only — no autograd, no optimizers, no training.
+//! 4. Owned tensors, no `Rc<RefCell>` indirection.
+//! 5. Minimal dependencies. The full default build pulls in only `bytemuck`.
+//! 6. Same code runs natively and in WASM. The library never opens files —
+//!    callers pass bytes in via [`ModelFile::parse`].
+//!
+//! ## Quick start
+//!
+//! ```no_run
+//! use std::fs;
+//! use wasmicro::{models::bert::{BertConfig, BertModel}, ModelFile};
+//!
+//! let bytes = fs::read("model.safetensors").unwrap();
+//! let file = ModelFile::parse(&bytes).unwrap();
+//!
+//! let config = BertConfig::mini_lm_l6_v2();
+//! let model = BertModel::from_safetensors(&file, config, "").unwrap();
+//!
+//! let input_ids = vec![101u32, 7592, 102]; // [CLS] hello [SEP]
+//! let embedding = model.embed_sentence(&input_ids, None, None);
+//! println!("embedding dim: {:?}", embedding.shape().as_slice());
+//! ```
+
+#![warn(missing_docs)]
+
+pub mod error;
+pub mod loader;
+pub mod models;
+pub mod ops;
+pub mod tensor;
+
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
+// Re-exports for the most-used types.
+pub use error::{Error, Result};
+pub use loader::{Dtype, ModelFile, TensorView};
+pub use tensor::{Shape, Tensor};

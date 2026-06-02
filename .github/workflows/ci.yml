@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Native test + WASM check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo test (native)
+        run: cargo test --workspace --all-targets
+
+      - name: cargo check (wasm32 + wasm feature)
+        run: cargo check --target wasm32-unknown-unknown --features wasm
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

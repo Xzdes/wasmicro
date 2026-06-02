@@ -1,0 +1,65 @@
+[workspace]
+members = ["tools/wasmicro-convert"]
+resolver = "2"
+
+[package]
+name = "wasmicro"
+version = "0.0.1"
+edition = "2021"
+authors = ["Xzdes"]
+license = "MIT OR Apache-2.0"
+description = "Tiny transformer inference for the web. One file. No build step."
+repository = "https://github.com/Xzdes/wasmicro"
+homepage = "https://github.com/Xzdes/wasmicro"
+documentation = "https://docs.rs/wasmicro"
+readme = "README.md"
+keywords = ["wasm", "inference", "transformer", "embeddings", "llm"]
+categories = ["wasm", "science", "no-std"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# === Dependencies ===
+# Default build pulls in only `bytemuck`. Everything else is optional and
+# behind a feature flag. No `ndarray`, no `candle`, no `rayon`, no
+# `serde_json`, no `chrono`.
+[dependencies]
+# Zero-copy reinterpretation of byte slices as typed slices (e.g. &[u8] -> &[f32]).
+bytemuck = { version = "1.18", features = ["derive"] }
+
+# Optional: f16 / bf16 support.
+half = { version = "2.4", optional = true }
+
+# Optional: WASM bindings. Enabled only via the `wasm` feature.
+wasm-bindgen = { version = "0.2.95", optional = true }
+js-sys = { version = "0.3.72", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Optional: routes Rust panics to the browser console.
+console_error_panic_hook = { version = "0.1.7", optional = true }
+
+[features]
+default = []
+
+# Enables the WASM API. Use this when building with wasm-pack.
+wasm = ["dep:wasm-bindgen", "dep:js-sys"]
+
+# WASM SIMD128 paths (requires `rustflags = ["-C", "target-feature=+simd128"]`).
+simd = []
+
+# Enables f16 / bf16 weight handling.
+f16 = ["dep:half"]
+
+# Forwards Rust panics to the browser console (debug only).
+wasm-debug = ["dep:console_error_panic_hook", "wasm"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+# === Release profile tuned for small WASM bundle size ===
+[profile.release]
+opt-level = "z"          # optimize for size
+lto = "fat"              # link-time optimization
+codegen-units = 1        # better LTO, slower build
+panic = "abort"          # drop unwind tables
+strip = "symbols"        # strip symbol names from the binary

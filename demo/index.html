@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wasmicro — tiny transformer inference for the web</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>wasmicro</h1>
+        <p class="tagline">
+          Tiny transformer inference for the web. One file. No build step.
+        </p>
+        <p class="links">
+          <a href="https://github.com/Xzdes/wasmicro">GitHub</a>
+        </p>
+      </header>
+
+      <section class="card">
+        <h2>WASM module</h2>
+        <table class="kv">
+          <tr><th>Status</th><td id="status">loading…</td></tr>
+          <tr><th>Version</th><td id="version">—</td></tr>
+          <tr><th>Bundle size</th><td id="bundle-size">—</td></tr>
+          <tr><th>Cold load time</th><td id="load-time">—</td></tr>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>Matmul benchmark</h2>
+        <p>Runs <code>n × n</code> matrix multiplication inside WASM.</p>
+        <div class="controls">
+          <label>
+            n =
+            <input type="number" id="n-input" value="128" min="8" max="1024" step="8" />
+          </label>
+          <button id="run-bench">Run</button>
+        </div>
+        <pre id="bench-result">(click Run)</pre>
+      </section>
+
+      <section class="card">
+        <h2>BERT inference</h2>
+        <p>
+          To run a real model, drop a <code>model.safetensors</code> file in
+          and provide its config. Use <code>wasmicro-convert</code> to
+          download a model from HuggingFace.
+        </p>
+        <div class="controls">
+          <input type="file" id="model-file" accept=".safetensors" />
+          <button id="load-model" disabled>Load model</button>
+        </div>
+        <pre id="model-status">(no model loaded)</pre>
+        <p class="hint">
+          Default config: <code>all-MiniLM-L6-v2</code>
+          (hidden=384, layers=6, heads=12).
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
