@@ -357,7 +357,11 @@ impl QuantizedTensorQ4 {
     pub fn get(&self, idx: usize) -> i8 {
         assert!(idx < self.len, "QuantizedTensorQ4: index out of bounds");
         let byte = self.data[idx / 2];
-        let nibble = if idx.is_multiple_of(2) { byte & 0x0f } else { byte >> 4 };
+        let nibble = if idx.is_multiple_of(2) {
+            byte & 0x0f
+        } else {
+            byte >> 4
+        };
         unpack_i4(nibble)
     }
 
