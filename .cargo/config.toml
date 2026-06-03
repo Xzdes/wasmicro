@@ -1,0 +1,11 @@
+# Build configuration applied to every Cargo invocation in this workspace.
+#
+# WASM SIMD128 is enabled by default for wasm32 targets. This produces
+# `f32x4_*` instructions in the matmul kernels and is supported by every
+# major browser since 2022 (Chrome 91+, Firefox 89+, Safari 16.4+).
+#
+# To opt out (e.g. to target very old browsers), pass
+# `-C target-feature=-simd128` via `RUSTFLAGS` for that build.
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

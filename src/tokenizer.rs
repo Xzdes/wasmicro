@@ -1,9 +1,23 @@
-//! Minimal WordPiece tokenizer.
+//! Minimal WordPiece tokenizer with Unicode support.
 //!
 //! The tokenizer keeps the runtime small by loading `vocab.txt` from caller
 //! bytes instead of embedding a vocabulary in the WASM module. It implements
-//! the BERT-style path needed by small encoder models: basic token splitting,
-//! greedy WordPiece matching, `[CLS]`/`[SEP]` wrapping, and optional padding.
+//! the BERT-style path needed by small encoder models:
+//!
+//! 1. Replace Unicode control characters with spaces.
+//! 2. Insert spaces around CJK characters so each becomes its own token.
+//! 3. Split on Unicode whitespace.
+//! 4. For each whitespace-delimited word: optional Unicode lowercasing,
+//!    then split off Unicode punctuation as individual tokens.
+//! 5. Greedy longest-match WordPiece against the loaded vocabulary.
+//! 6. Wrap with `[CLS]` / `[SEP]` and optionally pad to a fixed length.
+//!
+//! The character-class checks rely on `std::char` rather than a Unicode
+//! database crate. This keeps the WASM bundle a few kilobytes lighter at
+//! the cost of a small approximation of HuggingFace's Unicode punctuation
+//! category — see `is_punctuation` for details. Accent stripping (NFD +
+//! combining-mark removal) is intentionally not implemented; pick a
+//! `*-cased` multilingual vocabulary if your text has accents.
 
 use crate::error::{Error, Result};
 
@@ -21,7 +35,7 @@ pub struct EncodedInput {
 /// Options for [`WordPieceTokenizer`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WordPieceOptions {
-    /// Lowercase ASCII letters before WordPiece matching.
+    /// Lowercase via Unicode rules before WordPiece matching.
     pub lowercase: bool,
     /// Maximum number of chars in one basic token before it becomes `[UNK]`.
     pub max_input_chars_per_word: usize,
@@ -248,30 +262,56 @@ fn find_id_in(vocab: &[(String, u32)], token: &str) -> Option<u32> {
         .map(|idx| vocab[idx].1)
 }
 
+/// Performs BERT's basic tokenization step.
+///
+/// 1. Control characters become spaces.
+/// 2. CJK characters are surrounded by spaces (one token per char).
+/// 3. Whitespace splits words.
+/// 4. Within each word: optional Unicode lowercase, then punctuation is
+///    split out as individual tokens.
 fn basic_tokens(text: &str, lowercase: bool) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
+    let mut after_space = true;
 
-    for mut ch in text.chars() {
-        if is_ascii_control(ch) {
-            ch = ' ';
-        }
-        if lowercase && ch.is_ascii_uppercase() {
-            ch = ch.to_ascii_lowercase();
-        }
+    for raw_ch in text.chars() {
+        let ch = if is_control(raw_ch) { ' ' } else { raw_ch };
 
-        if is_ascii_whitespace(ch) {
-            flush_token(&mut current, &mut out);
-        } else if is_ascii_punctuation(ch) {
+        if is_cjk(ch) {
             flush_token(&mut current, &mut out);
             out.push(ch.to_string());
+            after_space = true;
+            continue;
+        }
+
+        if ch.is_whitespace() {
+            flush_token(&mut current, &mut out);
+            after_space = true;
+            continue;
+        }
+
+        after_space = false;
+        if lowercase {
+            for lower in ch.to_lowercase() {
+                emit_normalized(lower, &mut current, &mut out);
+            }
         } else {
-            current.push(ch);
+            emit_normalized(ch, &mut current, &mut out);
         }
     }
 
     flush_token(&mut current, &mut out);
+    let _ = after_space;
     out
+}
+
+fn emit_normalized(ch: char, current: &mut String, out: &mut Vec<String>) {
+    if is_punctuation(ch) {
+        flush_token(current, out);
+        out.push(ch.to_string());
+    } else {
+        current.push(ch);
+    }
 }
 
 fn flush_token(current: &mut String, out: &mut Vec<String>) {
@@ -280,19 +320,53 @@ fn flush_token(current: &mut String, out: &mut Vec<String>) {
     }
 }
 
-fn is_ascii_control(ch: char) -> bool {
-    ch <= '\u{1f}' || ch == '\u{7f}'
+fn is_control(ch: char) -> bool {
+    if matches!(ch, '\t' | '\n' | '\r') {
+        return false;
+    }
+    ch.is_control()
 }
 
-fn is_ascii_whitespace(ch: char) -> bool {
-    matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{0b}' | '\u{0c}')
-}
-
-fn is_ascii_punctuation(ch: char) -> bool {
+/// Matches HuggingFace's `_is_chinese_char`. Hiragana, Katakana, Hangul,
+/// and CJK punctuation are intentionally NOT included — BERT treats those
+/// as regular characters or punctuation, not per-character tokens.
+fn is_cjk(ch: char) -> bool {
+    let cp = ch as u32;
     matches!(
-        ch,
-        '!'..='/' | ':'..='@' | '['..='`' | '{'..='~'
+        cp,
+        0x4E00..=0x9FFF
+            | 0x3400..=0x4DBF
+            | 0x20000..=0x2A6DF
+            | 0x2A700..=0x2B73F
+            | 0x2B740..=0x2B81F
+            | 0x2B820..=0x2CEAF
+            | 0xF900..=0xFAFF
+            | 0x2F800..=0x2FA1F
     )
+}
+
+/// HuggingFace-compatible punctuation predicate without a Unicode database.
+///
+/// True for: ASCII punctuation ranges (`!`–`/`, `:`–`@`, `[`–`\``, `{`–`~`)
+/// and any non-ASCII character that is neither alphanumeric nor whitespace
+/// nor a control character. This approximates HF's Unicode category-`P*`
+/// check; it covers every real punctuation glyph we have observed (CJK
+/// punctuation, Arabic comma, Spanish `¿`/`¡`, French guillemets) at the
+/// cost of also marking some symbol-class characters (currency signs,
+/// arrows, emoji) as punctuation, which BERT treats as its own tokens too.
+fn is_punctuation(ch: char) -> bool {
+    let cp = ch as u32;
+    if (33..=47).contains(&cp)
+        || (58..=64).contains(&cp)
+        || (91..=96).contains(&cp)
+        || (123..=126).contains(&cp)
+    {
+        return true;
+    }
+    if cp < 128 {
+        return false;
+    }
+    !ch.is_alphanumeric() && !ch.is_whitespace() && !ch.is_control() && !is_cjk(ch)
 }
 
 #[cfg(test)]
@@ -347,5 +421,53 @@ mod tests {
         let tokenizer = test_tokenizer();
         let encoded = tokenizer.encode("hello hello hello", 4).unwrap();
         assert_eq!(encoded.input_ids, vec![2, 5, 5, 3]);
+    }
+
+    #[test]
+    fn basic_tokens_unicode_lowercases_cyrillic() {
+        // Russian word "Привет" must lowercase to "привет".
+        let tokens = basic_tokens("Привет", true);
+        assert_eq!(tokens, vec!["привет"]);
+    }
+
+    #[test]
+    fn basic_tokens_unicode_lowercases_spanish_n_tilde() {
+        // Spanish "ESPAÑOL" -> "español".
+        let tokens = basic_tokens("ESPAÑOL", true);
+        assert_eq!(tokens, vec!["español"]);
+    }
+
+    #[test]
+    fn basic_tokens_splits_cjk_chars() {
+        // Each CJK char becomes its own token.
+        let tokens = basic_tokens("你好世界", true);
+        assert_eq!(tokens, vec!["你", "好", "世", "界"]);
+    }
+
+    #[test]
+    fn basic_tokens_splits_mixed_cjk_and_latin() {
+        let tokens = basic_tokens("hello 你好 world", true);
+        assert_eq!(tokens, vec!["hello", "你", "好", "world"]);
+    }
+
+    #[test]
+    fn basic_tokens_treats_unicode_whitespace_as_break() {
+        // U+00A0 NO-BREAK SPACE and U+3000 IDEOGRAPHIC SPACE.
+        let tokens = basic_tokens("hello\u{00A0}world\u{3000}foo", true);
+        assert_eq!(tokens, vec!["hello", "world", "foo"]);
+    }
+
+    #[test]
+    fn basic_tokens_splits_non_ascii_punctuation() {
+        // Chinese full-width comma is treated as its own token.
+        let tokens = basic_tokens("hello，world", true);
+        assert_eq!(tokens, vec!["hello", "\u{ff0c}", "world"]);
+    }
+
+    #[test]
+    fn basic_tokens_keeps_spanish_inverted_marks_separate() {
+        // Inverted question/exclamation marks are punctuation.
+        let tokens = basic_tokens("¿hola?", true);
+        assert_eq!(tokens, vec!["¿", "hola", "?"]);
     }
 }

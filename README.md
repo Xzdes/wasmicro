@@ -51,7 +51,7 @@ Once it is published, **crates.io** will be the recommended path:
 
 ```toml
 [dependencies]
-wasmicro = "0.1.0"
+wasmicro = "0.2.0"
 ```
 
 Use it:
