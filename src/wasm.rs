@@ -32,11 +32,17 @@ pub fn version() -> String {
 /// Used by the demo page to time WASM performance from the JS side. Returning
 /// the first cell prevents the optimizer from dropping the computation.
 #[wasm_bindgen]
-pub fn matmul_bench(n: usize) -> f32 {
-    let a = Tensor::from_vec(vec![1.0; n * n], &[n, n]);
-    let b = Tensor::from_vec(vec![1.0; n * n], &[n, n]);
+pub fn matmul_bench(n: usize) -> Result<f32, JsError> {
+    if n == 0 || n > 2048 {
+        return Err(JsError::new("n must be in the range 1..=2048"));
+    }
+    let len = n
+        .checked_mul(n)
+        .ok_or_else(|| JsError::new("matrix size overflow"))?;
+    let a = Tensor::from_vec(vec![1.0; len], &[n, n]);
+    let b = Tensor::from_vec(vec![1.0; len], &[n, n]);
     let c = matmul(&a, &b);
-    c.data()[0]
+    Ok(c.data()[0])
 }
 
 /// WordPiece tokenizer exposed to JavaScript.
@@ -157,21 +163,19 @@ impl WasmBertModel {
     }
 
     /// Runs the encoder and returns flat `[seq_len, hidden_size]` hidden states.
-    pub fn forward(&self, input_ids: &[u32]) -> Box<[f32]> {
+    pub fn forward(&self, input_ids: &[u32]) -> Result<Box<[f32]>, JsError> {
         self.inner
-            .forward(input_ids, None)
-            .data()
-            .to_vec()
-            .into_boxed_slice()
+            .try_forward(input_ids, None)
+            .map(|t| t.data().to_vec().into_boxed_slice())
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Runs the encoder + mean-pool, returning a single `[hidden_size]` vector.
-    pub fn embed(&self, input_ids: &[u32]) -> Box<[f32]> {
+    pub fn embed(&self, input_ids: &[u32]) -> Result<Box<[f32]>, JsError> {
         self.inner
-            .embed_sentence(input_ids, None, None)
-            .data()
-            .to_vec()
-            .into_boxed_slice()
+            .try_embed_sentence(input_ids, None, None)
+            .map(|t| t.data().to_vec().into_boxed_slice())
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Runs the encoder + mean-pool with an explicit attention mask.
@@ -180,30 +184,22 @@ impl WasmBertModel {
         input_ids: &[u32],
         attention_mask: &[u32],
     ) -> Result<Box<[f32]>, JsError> {
-        if input_ids.len() != attention_mask.len() {
-            return Err(JsError::new(
-                "input_ids and attention_mask must have the same length",
-            ));
-        }
-        Ok(self
-            .inner
-            .embed_sentence(input_ids, None, Some(attention_mask))
-            .data()
-            .to_vec()
-            .into_boxed_slice())
+        self.inner
+            .try_embed_sentence(input_ids, None, Some(attention_mask))
+            .map(|t| t.data().to_vec().into_boxed_slice())
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Runs the encoder + mean-pool from a tokenizer output.
-    pub fn embed_encoded(&self, encoded: &WasmEncodedInput) -> Box<[f32]> {
+    pub fn embed_encoded(&self, encoded: &WasmEncodedInput) -> Result<Box<[f32]>, JsError> {
         self.inner
-            .embed_sentence(
+            .try_embed_sentence(
                 &encoded.inner.input_ids,
                 Some(&encoded.inner.token_type_ids),
                 Some(&encoded.inner.attention_mask),
             )
-            .data()
-            .to_vec()
-            .into_boxed_slice()
+            .map(|t| t.data().to_vec().into_boxed_slice())
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Tokenizes text, runs the encoder, and returns one pooled embedding.

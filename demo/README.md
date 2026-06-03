@@ -12,7 +12,7 @@ build step you need to run for production.
 wasm-pack build --release --target web --no-opt --out-dir demo/pkg --out-name wasmicro --features wasm
 
 # Optimize
-wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
+wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int --enable-simd -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
 
 # Serve
 cd demo

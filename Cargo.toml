@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "wasmicro"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["Xzdes"]
 license = "MIT OR Apache-2.0"
@@ -25,7 +25,7 @@ crate-type = ["cdylib", "rlib"]
 # `serde_json`, no `chrono`.
 [dependencies]
 # Zero-copy reinterpretation of byte slices as typed slices (e.g. &[u8] -> &[f32]).
-bytemuck = { version = "1.18", features = ["derive"] }
+bytemuck = "1.18"
 
 # Optional: f16 / bf16 support.
 half = { version = "2.4", optional = true }

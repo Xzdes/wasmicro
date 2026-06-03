@@ -10,7 +10,7 @@ WASM bundle is **93 KB** after `wasm-opt -Oz`. Hard ceiling is 250 KB.
 The same crate runs natively for tests, benchmarks, and the verification
 suite that proves numerical parity with HuggingFace.
 
-### Verified claims (as of v0.2.1)
+### Verified claims (as of v0.2.2)
 
 - BERT forward on `sentence-transformers/all-MiniLM-L6-v2` matches the
   `transformers` reference to within `1e-6`, cosine `1.000000`.

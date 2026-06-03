@@ -33,6 +33,8 @@ pub enum Error {
     ShapeDataMismatch,
     /// The tokenizer vocabulary or tokenizer request is invalid.
     InvalidTokenizer(&'static str),
+    /// The model configuration or inference input is invalid.
+    InvalidInput(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -50,6 +52,7 @@ impl fmt::Display for Error {
             Self::UnevenLength => write!(f, "tensor byte length is not a multiple of element size"),
             Self::ShapeDataMismatch => write!(f, "declared shape does not match data length"),
             Self::InvalidTokenizer(s) => write!(f, "invalid tokenizer: {}", s),
+            Self::InvalidInput(s) => write!(f, "invalid input: {}", s),
         }
     }
 }

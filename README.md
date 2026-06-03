@@ -32,7 +32,7 @@ compares numbers.
 
 ```toml
 [dependencies]
-wasmicro = "0.2.1"
+wasmicro = "0.2.2"
 ```
 
 ### JavaScript

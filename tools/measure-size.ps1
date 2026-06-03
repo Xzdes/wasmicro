@@ -65,6 +65,7 @@ if (Get-Command wasm-opt -ErrorAction SilentlyContinue) {
     Invoke-Checked "wasm-opt" @(
         "--enable-bulk-memory",
         "--enable-nontrapping-float-to-int",
+        "--enable-simd",
         "-Oz",
         $wasmPath,
         "-o",

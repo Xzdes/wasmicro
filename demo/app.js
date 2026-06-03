@@ -45,19 +45,23 @@ async function main() {
     $("bench-result").textContent = "running…";
     // Run on next frame so the UI can update first.
     requestAnimationFrame(() => {
-      // Warm-up.
-      matmul_bench(32);
-      const start = performance.now();
-      const head = matmul_bench(n);
-      const elapsed = (performance.now() - start) / 1000;
-      const flops = 2 * n * n * n;
-      const gflops = flops / elapsed / 1e9;
-      $("bench-result").textContent = [
-        `n = ${n}`,
-        `time = ${(elapsed * 1000).toFixed(2)} ms`,
-        `GFLOPS = ${gflops.toFixed(2)}`,
-        `first-cell sanity = ${head}`,
-      ].join("\n");
+      try {
+        // Warm-up.
+        matmul_bench(32);
+        const start = performance.now();
+        const head = matmul_bench(n);
+        const elapsed = (performance.now() - start) / 1000;
+        const flops = 2 * n * n * n;
+        const gflops = flops / elapsed / 1e9;
+        $("bench-result").textContent = [
+          `n = ${n}`,
+          `time = ${(elapsed * 1000).toFixed(2)} ms`,
+          `GFLOPS = ${gflops.toFixed(2)}`,
+          `first-cell sanity = ${head}`,
+        ].join("\n");
+      } catch (err) {
+        $("bench-result").textContent = `error: ${err.message ?? err}`;
+      }
     });
   });
 

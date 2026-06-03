@@ -154,6 +154,8 @@ impl BertModel {
     /// The prefix is joined to names with a `.` automatically, so pass
     /// `"bert"` not `"bert."`.
     pub fn from_safetensors(file: &ModelFile, config: BertConfig, prefix: &str) -> Result<Self> {
+        validate_config(config)?;
+
         let p = if prefix.is_empty() {
             String::new()
         } else {
@@ -243,14 +245,17 @@ impl BertModel {
     /// - `input_ids`: token ids, length = sequence length.
     /// - `token_type_ids`: optional segment ids; defaults to all-zeros.
     pub fn forward(&self, input_ids: &[u32], token_type_ids: Option<&[u32]>) -> Tensor {
+        self.try_forward(input_ids, token_type_ids)
+            .expect("forward: invalid model input")
+    }
+
+    /// Fallible encoder forward pass. Returns per-token hidden states.
+    ///
+    /// This validates user-provided ids and lengths before running tensor ops,
+    /// so embedding lookups do not panic on bad input.
+    pub fn try_forward(&self, input_ids: &[u32], token_type_ids: Option<&[u32]>) -> Result<Tensor> {
+        validate_forward_input(&self.config, input_ids, token_type_ids)?;
         let seq_len = input_ids.len();
-        assert!(seq_len > 0, "forward: input_ids must not be empty");
-        assert!(
-            seq_len <= self.config.max_position_embeddings,
-            "forward: sequence length {} exceeds max {}",
-            seq_len,
-            self.config.max_position_embeddings
-        );
 
         // 1. Sum word + position + token-type embeddings, then LayerNorm.
         let word_e = embedding(input_ids, &self.embeddings.word);
@@ -282,7 +287,7 @@ impl BertModel {
             hidden = encoder_layer_forward(&hidden, layer, &self.config);
         }
 
-        hidden
+        Ok(hidden)
     }
 
     /// Convenience: forward + mean pooling, returning a single `[hidden]` vector.
@@ -295,8 +300,26 @@ impl BertModel {
         token_type_ids: Option<&[u32]>,
         attention_mask: Option<&[u32]>,
     ) -> Tensor {
-        let hidden = self.forward(input_ids, token_type_ids);
-        mean_pool(&hidden, attention_mask)
+        self.try_embed_sentence(input_ids, token_type_ids, attention_mask)
+            .expect("embed_sentence: invalid model input")
+    }
+
+    /// Fallible forward + mean pooling, returning a single `[hidden]` vector.
+    pub fn try_embed_sentence(
+        &self,
+        input_ids: &[u32],
+        token_type_ids: Option<&[u32]>,
+        attention_mask: Option<&[u32]>,
+    ) -> Result<Tensor> {
+        if let Some(mask) = attention_mask {
+            if mask.len() != input_ids.len() {
+                return Err(Error::InvalidInput(
+                    "attention_mask length must match input_ids length",
+                ));
+            }
+        }
+        let hidden = self.try_forward(input_ids, token_type_ids)?;
+        Ok(mean_pool(&hidden, attention_mask))
     }
 
     /// Convenience: tokenize one text, run the encoder, and mean-pool.
@@ -310,12 +333,79 @@ impl BertModel {
         max_len: usize,
     ) -> Result<Tensor> {
         let encoded = tokenizer.encode(text, max_len)?;
-        Ok(self.embed_sentence(
+        self.try_embed_sentence(
             &encoded.input_ids,
             Some(&encoded.token_type_ids),
             Some(&encoded.attention_mask),
-        ))
+        )
     }
+}
+
+fn validate_config(config: BertConfig) -> Result<()> {
+    if config.hidden_size == 0 {
+        return Err(Error::InvalidInput("hidden_size must be greater than zero"));
+    }
+    if config.num_attention_heads == 0 {
+        return Err(Error::InvalidInput(
+            "num_attention_heads must be greater than zero",
+        ));
+    }
+    if !config
+        .hidden_size
+        .is_multiple_of(config.num_attention_heads)
+    {
+        return Err(Error::InvalidInput(
+            "hidden_size must be divisible by num_attention_heads",
+        ));
+    }
+    if config.vocab_size == 0 {
+        return Err(Error::InvalidInput("vocab_size must be greater than zero"));
+    }
+    if config.max_position_embeddings == 0 {
+        return Err(Error::InvalidInput(
+            "max_position_embeddings must be greater than zero",
+        ));
+    }
+    if config.type_vocab_size == 0 {
+        return Err(Error::InvalidInput(
+            "type_vocab_size must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_forward_input(
+    config: &BertConfig,
+    input_ids: &[u32],
+    token_type_ids: Option<&[u32]>,
+) -> Result<()> {
+    if input_ids.is_empty() {
+        return Err(Error::InvalidInput("input_ids must not be empty"));
+    }
+    if input_ids.len() > config.max_position_embeddings {
+        return Err(Error::InvalidInput(
+            "input_ids length exceeds max_position_embeddings",
+        ));
+    }
+    if input_ids.iter().any(|&id| id as usize >= config.vocab_size) {
+        return Err(Error::InvalidInput("input id is out of vocabulary range"));
+    }
+    if let Some(type_ids) = token_type_ids {
+        if type_ids.len() != input_ids.len() {
+            return Err(Error::InvalidInput(
+                "token_type_ids length must match input_ids length",
+            ));
+        }
+        if type_ids
+            .iter()
+            .any(|&id| id as usize >= config.type_vocab_size)
+        {
+            return Err(Error::InvalidInput(
+                "token type id is out of token type vocabulary range",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn encoder_layer_forward(x: &Tensor, layer: &BertLayer, config: &BertConfig) -> Tensor {
@@ -487,5 +577,48 @@ mod tests {
         for &v in embedding.data() {
             assert!(v.is_finite(), "non-finite embedding: {}", v);
         }
+    }
+
+    #[test]
+    fn try_forward_rejects_bad_user_input() {
+        let (_config, model) = tiny_bert();
+
+        assert_eq!(
+            model.try_forward(&[], None).unwrap_err(),
+            Error::InvalidInput("input_ids must not be empty")
+        );
+        assert_eq!(
+            model.try_forward(&[99], None).unwrap_err(),
+            Error::InvalidInput("input id is out of vocabulary range")
+        );
+        assert_eq!(
+            model.try_forward(&[1, 2], Some(&[0])).unwrap_err(),
+            Error::InvalidInput("token_type_ids length must match input_ids length")
+        );
+        assert_eq!(
+            model
+                .try_embed_sentence(&[1, 2], None, Some(&[1]))
+                .unwrap_err(),
+            Error::InvalidInput("attention_mask length must match input_ids length")
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_invalid_config() {
+        let config = BertConfig {
+            hidden_size: 7,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            intermediate_size: 8,
+            vocab_size: 8,
+            max_position_embeddings: 16,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
+        };
+
+        assert_eq!(
+            validate_config(config).unwrap_err(),
+            Error::InvalidInput("hidden_size must be divisible by num_attention_heads")
+        );
     }
 }
