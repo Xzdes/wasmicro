@@ -5,10 +5,23 @@ working on `wasmicro`. Read this before making changes.
 
 ## What this crate is
 
-A minimal forward-only inference library for transformer models. The target
-deployment is a small WebAssembly bundle (< 250 KB after `wasm-opt -Oz`) that
-runs in a browser, Node, Cloudflare Workers, or any other JS host. The same
-crate also runs natively for tests and benchmarks.
+A minimal forward-only inference library for transformer models. Current
+WASM bundle is **93 KB** after `wasm-opt -Oz`. Hard ceiling is 250 KB.
+The same crate runs natively for tests, benchmarks, and the verification
+suite that proves numerical parity with HuggingFace.
+
+### Verified claims (as of v0.2.0)
+
+- BERT forward on `sentence-transformers/all-MiniLM-L6-v2` matches the
+  `transformers` reference to within `1e-6`, cosine `1.000000`.
+- WordPiece tokenizer matches `bert-base-multilingual-cased` exactly on
+  8 / 8 test cases covering English, Russian, Chinese, Spanish, and
+  mixed-script inputs.
+- WASM SIMD128 is on by default for `wasm32-unknown-unknown` via
+  `.cargo/config.toml`; the scalar fallback covers every other target.
+
+When you add or change code, **do not regress these claims**. Run the
+verification commands at the end of this file before declaring work done.
 
 ## What this crate is NOT
 
@@ -131,17 +144,29 @@ cargo test  --workspace
 # WASM target check (catches std accidentally leaking into the library)
 cargo check --target wasm32-unknown-unknown --features wasm
 
-# Build the WASM bundle for a browser
+# Build the WASM bundle for a browser. SIMD128 is enabled automatically by
+# .cargo/config.toml; --enable-simd on wasm-opt is mandatory because the
+# emitted .wasm contains v128 instructions.
 wasm-pack build --release --target web --no-opt \
-    --out-dir demo/pkg --out-name wasmicro --features wasm
-wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int -Oz \
-    demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
+    --out-dir demo/pkg --out-name wasmicro \
+    . -- --features wasm
+wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int --enable-simd \
+    -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
 
 # Build the converter
 cargo build --release -p wasmicro-convert
 
 # Publish dry-run for the library
 cargo publish --dry-run --allow-dirty -p wasmicro
+
+# Run the verification suite (downloads HF reference models).
+# All three must pass before tagging a release.
+cd ../wasmicro-verify
+python python/reference.py
+python python/multilingual_tokens.py
+cargo run --release --bin wasmicro-verify
+cargo run --release --bin e2e_search
+cargo run --release --bin multilingual_tokens
 ```
 
 ## When in doubt
