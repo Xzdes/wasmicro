@@ -141,9 +141,9 @@ pub fn multi_head_attention_from_qkv(
     let mut concat = vec![0.0f32; seq_len * hidden];
 
     for h in 0..num_heads {
-        let q_h = extract_head(&q, h, num_heads);
-        let k_h = extract_head(&k, h, num_heads);
-        let v_h = extract_head(&v, h, num_heads);
+        let q_h = extract_head(q, h, num_heads);
+        let k_h = extract_head(k, h, num_heads);
+        let v_h = extract_head(v, h, num_heads);
 
         // scores = Q_h @ K_h^T / sqrt(head_dim)
         let scores = matmul_t_b(&q_h, &k_h);

@@ -64,16 +64,16 @@ pub fn matmul_t_b_u8(a: &Tensor, b: &QuantizedTensorU8) -> Tensor {
     for i in 0..m {
         let a_row = &a_data[i * k..(i + 1) * k];
         let out_row = &mut out[i * n..(i + 1) * n];
-        for j in 0..n {
+        for (j, out_cell) in out_row.iter_mut().enumerate() {
             let b_row = &b_data[j * k..(j + 1) * k];
             let scale = b.scale_for_row(j);
             let zero_point = b.zero_point_for_row(j) as i32;
             let mut acc = 0.0f32;
-            for kk in 0..k {
-                let deq = (b_row[kk] as i32 - zero_point) as f32 * scale;
-                acc += a_row[kk] * deq;
+            for (&a_val, &b_val) in a_row.iter().zip(b_row) {
+                let deq = (b_val as i32 - zero_point) as f32 * scale;
+                acc += a_val * deq;
             }
-            out_row[j] = acc;
+            *out_cell = acc;
         }
     }
 
@@ -106,14 +106,14 @@ pub fn matmul_t_b_q4(a: &Tensor, b: &QuantizedTensorQ4) -> Tensor {
     for i in 0..m {
         let a_row = &a_data[i * k..(i + 1) * k];
         let out_row = &mut out[i * n..(i + 1) * n];
-        for j in 0..n {
+        for (j, out_cell) in out_row.iter_mut().enumerate() {
             let scale = b.scale_for_row(j);
             let mut acc = 0.0f32;
-            for kk in 0..k {
+            for (kk, &a_val) in a_row.iter().enumerate() {
                 let q = b.get(j * k + kk) as f32;
-                acc += a_row[kk] * q * scale;
+                acc += a_val * q * scale;
             }
-            out_row[j] = acc;
+            *out_cell = acc;
         }
     }
 
@@ -152,9 +152,10 @@ fn add_optional_bias(y: &mut Tensor, bias: Option<&Tensor>, op: &str) {
     );
 
     let n = y_shape[1];
+    let bias_data = bias.data();
     for row in y.data_mut().chunks_mut(n) {
-        for j in 0..n {
-            row[j] += bias.data()[j];
+        for (row_val, &b_val) in row.iter_mut().zip(bias_data) {
+            *row_val += b_val;
         }
     }
 }

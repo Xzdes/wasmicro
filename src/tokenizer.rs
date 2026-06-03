@@ -160,7 +160,7 @@ impl WordPieceTokenizer {
         let token_budget = max_len - 2;
 
         for token in basic_tokens(text, self.options.lowercase) {
-            if input_ids.len() - 1 >= token_budget {
+            if input_ids.len() > token_budget {
                 break;
             }
             let remaining = token_budget - (input_ids.len() - 1);
