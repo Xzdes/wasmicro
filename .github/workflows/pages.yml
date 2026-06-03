@@ -46,7 +46,14 @@ jobs:
             --features wasm
 
       - name: Optimize WASM size
-        run: wasm-opt --enable-bulk-memory --enable-nontrapping-float-to-int -Oz demo/pkg/wasmicro_bg.wasm -o demo/pkg/wasmicro_bg.wasm
+        run: |
+          wasm-opt \
+            --enable-bulk-memory \
+            --enable-nontrapping-float-to-int \
+            --enable-simd \
+            -Oz \
+            demo/pkg/wasmicro_bg.wasm \
+            -o demo/pkg/wasmicro_bg.wasm
 
       - name: Report bundle size
         run: |
