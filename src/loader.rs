@@ -216,7 +216,7 @@ impl<'a> TensorView<'a> {
             return Err(Error::DtypeMismatch);
         }
         let elem_size = self.dtype.size();
-        if self.raw.len() % elem_size != 0 {
+        if !self.raw.len().is_multiple_of(elem_size) {
             return Err(Error::UnevenLength);
         }
         let expected: usize = self.shape.iter().product::<usize>() * elem_size;

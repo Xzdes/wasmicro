@@ -20,7 +20,7 @@ fn extract_head(x: &Tensor, head_idx: usize, num_heads: usize) -> Tensor {
     let seq_len = shape[0];
     let hidden = shape[1];
     assert!(
-        hidden % num_heads == 0,
+        hidden.is_multiple_of(num_heads),
         "extract_head: hidden ({}) must be divisible by num_heads ({})",
         hidden,
         num_heads
@@ -86,7 +86,7 @@ pub fn multi_head_attention(
     assert_eq!(shape.len(), 2, "multi_head_attention: x must be 2D");
     let hidden = shape[1];
     assert!(
-        hidden % num_heads == 0,
+        hidden.is_multiple_of(num_heads),
         "multi_head_attention: hidden ({}) must be divisible by num_heads ({})",
         hidden,
         num_heads
@@ -131,7 +131,7 @@ pub fn multi_head_attention_from_qkv(
     let seq_len = q_shape[0];
     let hidden = q_shape[1];
     assert!(
-        hidden % num_heads == 0,
+        hidden.is_multiple_of(num_heads),
         "multi_head_attention_from_qkv: hidden ({}) must be divisible by num_heads ({})",
         hidden,
         num_heads
