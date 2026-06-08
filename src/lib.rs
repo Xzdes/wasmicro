@@ -39,6 +39,7 @@ pub mod error;
 pub mod loader;
 pub mod models;
 pub mod ops;
+pub mod pipeline;
 pub mod quant;
 pub mod tensor;
 pub mod tokenizer;
@@ -49,6 +50,8 @@ pub mod wasm;
 // Re-exports for the most-used types.
 pub use error::{Error, Result};
 pub use loader::{Dtype, ModelFile, TensorView};
+pub use pipeline::Pipeline;
 pub use quant::{QuantizedTensorI8, QuantizedTensorQ4, QuantizedTensorU8};
 pub use tensor::{Shape, Tensor};
 pub use tokenizer::{EncodedInput, WordPieceOptions, WordPieceTokenizer};
+pub use tokenizer::bpe::BpeTokenizer;

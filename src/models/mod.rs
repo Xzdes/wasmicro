@@ -5,3 +5,5 @@
 //! and the caller knows which one they're using.
 
 pub mod bert;
+pub mod gpt2;
+pub mod t5;

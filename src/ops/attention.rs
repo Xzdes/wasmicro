@@ -201,6 +201,169 @@ pub fn mean_pool(x: &Tensor, attention_mask: Option<&[u32]>) -> Tensor {
     Tensor::from_vec(out, &[hidden])
 }
 
+/// Causal (lower-triangular) multi-head self-attention.
+///
+/// Each position can attend only to itself and earlier positions. Used by
+/// GPT-2 and other decoder-only models for autoregressive generation.
+///
+/// - `q`, `k`, `v`: shape `[seq_len, hidden]`
+/// - returned tensor shape: `[seq_len, hidden]`
+pub fn causal_multi_head_attention_from_qkv(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+) -> Tensor {
+    let q_shape = q.shape().as_slice();
+    let seq_len = q_shape[0];
+    let hidden = q_shape[1];
+    assert!(
+        hidden.is_multiple_of(num_heads),
+        "causal_attention: hidden must be divisible by num_heads"
+    );
+    let head_dim = hidden / num_heads;
+    let scale_factor = 1.0 / (head_dim as f32).sqrt();
+    let mut concat = vec![0.0f32; seq_len * hidden];
+
+    for h in 0..num_heads {
+        let q_h = extract_head(q, h, num_heads);
+        let k_h = extract_head(k, h, num_heads);
+        let v_h = extract_head(v, h, num_heads);
+
+        let raw = matmul_t_b(&q_h, &k_h);
+        let raw = scale(&raw, scale_factor);
+        let masked = apply_causal_mask(&raw);
+        let attn = softmax_last_dim(&masked);
+        let head_out = matmul(&attn, &v_h);
+        write_head_back(&mut concat, &head_out, h, num_heads);
+    }
+
+    Tensor::from_vec(concat, &[seq_len, hidden])
+}
+
+/// Cross-attention: Q from decoder, K/V from encoder.
+///
+/// Q may have a different sequence length from K and V. No causal mask is
+/// applied. Used for T5-style encoder-decoder attention.
+///
+/// - `q`: shape `[q_len, hidden]`
+/// - `k`, `v`: shape `[kv_len, hidden]`
+/// - returned tensor shape: `[q_len, hidden]`
+pub fn cross_attention_from_qkv(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+) -> Tensor {
+    let q_shape = q.shape().as_slice();
+    let q_len = q_shape[0];
+    let hidden = q_shape[1];
+    assert!(
+        hidden.is_multiple_of(num_heads),
+        "cross_attention: hidden must be divisible by num_heads"
+    );
+    let head_dim = hidden / num_heads;
+    let scale_factor = 1.0 / (head_dim as f32).sqrt();
+    let mut concat = vec![0.0f32; q_len * hidden];
+
+    for h in 0..num_heads {
+        let q_h = extract_head(q, h, num_heads);
+        let k_h = extract_head(k, h, num_heads);
+        let v_h = extract_head(v, h, num_heads);
+
+        let raw = matmul_t_b(&q_h, &k_h);
+        let raw = scale(&raw, scale_factor);
+        let attn = softmax_last_dim(&raw);
+        let head_out = matmul(&attn, &v_h);
+        write_head_back(&mut concat, &head_out, h, num_heads);
+    }
+
+    Tensor::from_vec(concat, &[q_len, hidden])
+}
+
+/// Multi-head attention with an additive relative position bias (T5-style).
+///
+/// - `q`, `k`, `v`: shape `[q_len, hidden]` (K/V may have different q_len)
+/// - `bias`: shape `[num_heads, q_len, kv_len]` — added to raw scores
+/// - `causal`: if true, applies a lower-triangular mask after the bias
+///
+/// Returns `[q_len, hidden]`.
+pub fn multi_head_attention_with_bias(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+    bias: Option<&Tensor>,
+    causal: bool,
+) -> Tensor {
+    let q_shape = q.shape().as_slice();
+    let k_shape = k.shape().as_slice();
+    let q_len = q_shape[0];
+    let hidden = q_shape[1];
+    let kv_len = k_shape[0];
+    assert!(
+        hidden.is_multiple_of(num_heads),
+        "attention_with_bias: hidden must be divisible by num_heads"
+    );
+    let head_dim = hidden / num_heads;
+    let scale_factor = 1.0 / (head_dim as f32).sqrt();
+    let mut concat = vec![0.0f32; q_len * hidden];
+    let bias_data = bias.map(|b| b.data());
+
+    for h in 0..num_heads {
+        let q_h = extract_head(q, h, num_heads);
+        let k_h = extract_head(k, h, num_heads);
+        let v_h = extract_head(v, h, num_heads);
+
+        let raw = matmul_t_b(&q_h, &k_h);
+        let mut scores = raw.data().to_vec();
+
+        if let Some(bd) = bias_data {
+            let bias_off = h * q_len * kv_len;
+            for i in 0..q_len {
+                for j in 0..kv_len {
+                    scores[i * kv_len + j] =
+                        scores[i * kv_len + j] * scale_factor + bd[bias_off + i * kv_len + j];
+                }
+            }
+        } else {
+            for s in &mut scores {
+                *s *= scale_factor;
+            }
+        }
+
+        if causal {
+            for i in 0..q_len {
+                for j in (i + 1)..kv_len {
+                    scores[i * kv_len + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+
+        let scores_t = Tensor::from_vec(scores, &[q_len, kv_len]);
+        let attn = softmax_last_dim(&scores_t);
+        let head_out = matmul(&attn, &v_h);
+        write_head_back(&mut concat, &head_out, h, num_heads);
+    }
+
+    Tensor::from_vec(concat, &[q_len, hidden])
+}
+
+/// Applies a lower-triangular causal mask to a `[q_len, k_len]` score tensor.
+/// Positions where `j > i` are set to `-inf` so softmax zeroes them out.
+fn apply_causal_mask(scores: &Tensor) -> Tensor {
+    let shape = scores.shape().as_slice();
+    let q_len = shape[0];
+    let k_len = shape[1];
+    let mut out = scores.data().to_vec();
+    for i in 0..q_len {
+        for j in (i + 1)..k_len {
+            out[i * k_len + j] = f32::NEG_INFINITY;
+        }
+    }
+    Tensor::from_vec(out, shape)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,11 +4,11 @@ resolver = "2"
 
 [package]
 name = "wasmicro"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 authors = ["Xzdes"]
 license = "MIT OR Apache-2.0"
-description = "Tiny transformer inference for the web. One file. No build step."
+description = "Tiny transformer inference for the web. BERT, GPT-2 and T5 in a 199 KB WASM bundle."
 repository = "https://github.com/Xzdes/wasmicro"
 homepage = "https://github.com/Xzdes/wasmicro"
 documentation = "https://docs.rs/wasmicro"

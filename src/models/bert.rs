@@ -54,6 +54,55 @@ pub struct BertConfig {
 }
 
 impl BertConfig {
+    /// Parses a HuggingFace `config.json` string and extracts the BERT fields.
+    ///
+    /// Required keys: `hidden_size`, `num_hidden_layers`, `num_attention_heads`,
+    /// `intermediate_size`, `vocab_size`, `max_position_embeddings`.
+    /// Optional: `type_vocab_size` (default 2), `layer_norm_eps` (default 1e-12).
+    pub fn from_config_json(json: &str) -> Result<Self> {
+        let extract_usize = |key: &str| -> Option<usize> {
+            let pattern = format!("\"{key}\":");
+            let start = json.find(&pattern)? + pattern.len();
+            let rest = json[start..].trim_start();
+            let end = rest.find(|c: char| !c.is_ascii_digit())?;
+            if end == 0 {
+                return None;
+            }
+            rest[..end].parse().ok()
+        };
+        let extract_f32 = |key: &str| -> Option<f32> {
+            let pattern = format!("\"{key}\":");
+            let start = json.find(&pattern)? + pattern.len();
+            let rest = json[start..].trim_start();
+            let end = rest.find(|c: char| {
+                !matches!(c, '-' | '+' | '.' | 'e' | 'E') && !c.is_ascii_digit()
+            })?;
+            if end == 0 {
+                return None;
+            }
+            rest[..end].parse().ok()
+        };
+
+        let config = Self {
+            hidden_size: extract_usize("hidden_size")
+                .ok_or(Error::InvalidInput("config.json: missing hidden_size"))?,
+            num_hidden_layers: extract_usize("num_hidden_layers")
+                .ok_or(Error::InvalidInput("config.json: missing num_hidden_layers"))?,
+            num_attention_heads: extract_usize("num_attention_heads")
+                .ok_or(Error::InvalidInput("config.json: missing num_attention_heads"))?,
+            intermediate_size: extract_usize("intermediate_size")
+                .ok_or(Error::InvalidInput("config.json: missing intermediate_size"))?,
+            vocab_size: extract_usize("vocab_size")
+                .ok_or(Error::InvalidInput("config.json: missing vocab_size"))?,
+            max_position_embeddings: extract_usize("max_position_embeddings")
+                .ok_or(Error::InvalidInput("config.json: missing max_position_embeddings"))?,
+            type_vocab_size: extract_usize("type_vocab_size").unwrap_or(2),
+            layer_norm_eps: extract_f32("layer_norm_eps").unwrap_or(1e-12),
+        };
+        validate_config(config)?;
+        Ok(config)
+    }
+
     /// Config for `sentence-transformers/all-MiniLM-L6-v2`.
     pub fn mini_lm_l6_v2() -> Self {
         Self {
@@ -145,6 +194,22 @@ pub struct BertModel {
 }
 
 impl BertModel {
+    /// Loads a BERT model, auto-detecting the tensor name prefix.
+    ///
+    /// Tries common prefixes used by HuggingFace saves in order:
+    /// `""` (sentence-transformers), `"bert"`, `"roberta"`, `"distilbert"`.
+    /// Returns the first that succeeds, or an error if none match.
+    pub fn from_safetensors_auto(file: &ModelFile, config: BertConfig) -> Result<Self> {
+        for prefix in &["", "bert", "roberta", "distilbert", "electra"] {
+            if let Ok(model) = Self::from_safetensors(file, config, prefix) {
+                return Ok(model);
+            }
+        }
+        Err(Error::InvalidInput(
+            "could not load model with any known prefix (tried '', 'bert', 'roberta', 'distilbert', 'electra')",
+        ))
+    }
+
     /// Loads a BERT model from a parsed safetensors file.
     ///
     /// `prefix` is prepended to every tensor name. Use:
@@ -338,6 +403,22 @@ impl BertModel {
             Some(&encoded.token_type_ids),
             Some(&encoded.attention_mask),
         )
+    }
+
+    /// Tokenizes and embeds a batch of texts, returning one vector per text.
+    ///
+    /// Each text is encoded independently (no shared padding). The returned
+    /// `Vec` has the same length as `texts`.
+    pub fn embed_batch(
+        &self,
+        tokenizer: &WordPieceTokenizer,
+        texts: &[&str],
+        max_len: usize,
+    ) -> Result<Vec<Tensor>> {
+        texts
+            .iter()
+            .map(|t| self.embed_text(tokenizer, t, max_len))
+            .collect()
     }
 }
 

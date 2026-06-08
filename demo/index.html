@@ -18,59 +18,103 @@
         </p>
       </header>
 
+      <!-- WASM module stats -->
       <section class="card">
         <h2>WASM module</h2>
         <table class="kv">
-          <tr><th>Status</th><td id="status">loading…</td></tr>
-          <tr><th>Version</th><td id="version">—</td></tr>
-          <tr><th>Bundle size</th><td id="bundle-size">—</td></tr>
+          <tr><th>Status</th>       <td id="status">loading…</td></tr>
+          <tr><th>Version</th>      <td id="version">—</td></tr>
+          <tr><th>Bundle size</th>  <td id="bundle-size">—</td></tr>
           <tr><th>Cold load time</th><td id="load-time">—</td></tr>
         </table>
       </section>
 
+      <!-- Matmul benchmark -->
       <section class="card">
         <h2>Matmul benchmark</h2>
         <p>Runs <code>n × n</code> matrix multiplication inside WASM.</p>
         <div class="controls">
-          <label>
-            n =
-            <input type="number" id="n-input" value="128" min="8" max="1024" step="8" />
-          </label>
+          <label>n = <input type="number" id="n-input" value="128" min="8" max="1024" step="8" /></label>
           <button id="run-bench">Run</button>
         </div>
         <pre id="bench-result">(click Run)</pre>
       </section>
 
+      <!-- Pipeline loader (BERT + GPT-2 + T5 via one unified API) -->
       <section class="card">
-        <h2>Semantic search</h2>
+        <h2>Load model — <code>WasmPipeline</code></h2>
         <p>
-          Drop in <code>model.safetensors</code> and <code>vocab.txt</code>,
-          then rank documents by embedding similarity.
+          Supports <strong>BERT</strong> (embeddings), <strong>GPT-2</strong> and
+          <strong>T5</strong> (generation). Model type is auto-detected from
+          <code>config.json</code> — no hardcoded parameters needed.
         </p>
+
+        <table class="kv upload-table">
+          <tr>
+            <th><code>model.safetensors</code></th>
+            <td><input type="file" id="file-model" accept=".safetensors,.bin" /></td>
+          </tr>
+          <tr>
+            <th><code>vocab.txt</code> <em>(BERT)</em><br /><code>vocab.json</code> <em>(GPT-2/T5)</em></th>
+            <td><input type="file" id="file-tokenizer" accept=".txt,.json" /></td>
+          </tr>
+          <tr>
+            <th><code>config.json</code> <em>(required)</em></th>
+            <td><input type="file" id="file-config" accept=".json" /></td>
+          </tr>
+          <tr>
+            <th><code>merges.txt</code> <em>(GPT-2/T5 only)</em></th>
+            <td><input type="file" id="file-merges" accept=".txt" /></td>
+          </tr>
+        </table>
+
         <div class="controls">
-          <input type="file" id="model-file" accept=".safetensors" />
-          <input type="file" id="vocab-file" accept=".txt" />
+          <button id="load-pipeline" disabled>Load</button>
         </div>
+        <pre id="pipeline-status">(no model loaded)</pre>
+      </section>
+
+      <!-- BERT: semantic search -->
+      <section class="card" id="bert-section" hidden>
+        <h2>Semantic search <span class="badge">BERT</span></h2>
         <div class="controls">
           <label>
-            query
-            <input type="text" id="query-text" value="hello world" />
+            Query
+            <input type="text" id="query-text" value="What is machine learning?" />
           </label>
           <label>
-            max len
-            <input type="number" id="max-len" value="32" min="2" max="512" step="1" />
+            max_len
+            <input type="number" id="max-len" value="64" min="4" max="512" />
           </label>
-          <button id="load-model" disabled>Load</button>
-          <button id="run-search" disabled>Search</button>
+          <button id="run-search">Search</button>
         </div>
-        <textarea id="documents" rows="5">hello world
-tiny transformer inference
-browser embeddings with WebAssembly
-semantic search demo</textarea>
-        <pre id="model-status">(no model loaded)</pre>
+        <textarea id="documents" rows="6">Deep learning is a subset of machine learning.
+Carbonara is a classic Italian pasta dish from Rome.
+Whales produce complex songs that travel underwater.
+The stock market opened higher on tech earnings.
+Volcanic eruptions can cause global temperature drops.</textarea>
+        <pre id="search-output">(load a BERT model to enable)</pre>
+      </section>
+
+      <!-- GPT-2 / T5: text generation -->
+      <section class="card" id="gen-section" hidden>
+        <h2 id="gen-title">Text generation</h2>
+        <div class="controls">
+          <label>
+            Prompt
+            <input type="text" id="gen-prompt" value="Once upon a time" style="width:340px" />
+          </label>
+          <label>
+            max new tokens
+            <input type="number" id="gen-tokens" value="50" min="1" max="512" />
+          </label>
+          <button id="run-generate">Generate</button>
+        </div>
+        <pre id="gen-output">(load a GPT-2 or T5 model to enable)</pre>
         <p class="hint">
-          Default config: <code>all-MiniLM-L6-v2</code>
-          (hidden=384, layers=6, heads=12).
+          T5 tip: prefix your prompt with a task instruction, e.g.
+          <em>"translate English to French: Hello"</em> or
+          <em>"summarize: The quick brown fox…"</em>
         </p>
       </section>
     </main>

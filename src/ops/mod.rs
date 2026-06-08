@@ -16,4 +16,5 @@ pub mod layernorm;
 pub mod linear;
 pub mod matmul;
 pub mod quantized;
+pub mod rms_norm;
 pub mod softmax;

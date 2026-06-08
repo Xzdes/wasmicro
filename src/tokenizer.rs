@@ -354,6 +354,12 @@ fn is_cjk(ch: char) -> bool {
 /// punctuation, Arabic comma, Spanish `¿`/`¡`, French guillemets) at the
 /// cost of also marking some symbol-class characters (currency signs,
 /// arrows, emoji) as punctuation, which BERT treats as its own tokens too.
+/// Returns `true` if this byte is directly representable as itself in GPT-2's
+/// byte-level vocabulary (printable ASCII + printable Latin-1).
+fn is_printable_byte(b: u8) -> bool {
+    matches!(b, b'!'..=b'~' | 0xA1..=0xAC | 0xAE..=0xFF)
+}
+
 fn is_punctuation(ch: char) -> bool {
     let cp = ch as u32;
     if (33..=47).contains(&cp)
@@ -469,5 +475,450 @@ mod tests {
         // Inverted question/exclamation marks are punctuation.
         let tokens = basic_tokens("¿hola?", true);
         assert_eq!(tokens, vec!["¿", "hola", "?"]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Byte-level BPE tokenizer (GPT-2 / RoBERTa compatible)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Byte-level BPE tokenizer compatible with GPT-2 and RoBERTa.
+///
+/// Load from the two files that HuggingFace distributes with every GPT-2
+/// model: `vocab.json` (token-string → id mapping) and `merges.txt`
+/// (ordered BPE merge rules).
+///
+/// # Byte-level encoding
+///
+/// GPT-2 maps each input byte to a unique Unicode character before applying
+/// BPE. This means every byte sequence is representable without an `[UNK]`
+/// token — the vocabulary only needs to contain the 256 single-byte tokens
+/// plus the merged tokens.
+///
+/// # Limitations
+///
+/// The pre-tokenization uses a simple whitespace-split approach rather than
+/// GPT-2's full regex pattern. This covers the common case well; contraction
+/// splitting (`it's` → `it` + `'s`) is not performed.
+pub mod bpe {
+    use crate::error::{Error, Result};
+    use std::collections::HashMap;
+
+    /// Token ids and masks produced by [`BpeTokenizer`].
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct BpeEncodedInput {
+        /// Token ids including BOS (if present).
+        pub input_ids: Vec<u32>,
+        /// `1` for real tokens, `0` for padding.
+        pub attention_mask: Vec<u32>,
+    }
+
+    /// Byte-level BPE tokenizer.
+    #[derive(Clone, Debug)]
+    pub struct BpeTokenizer {
+        vocab: HashMap<String, u32>,
+        decoder: Vec<String>,
+        merges: HashMap<(String, String), u32>,
+        byte_encoder: [char; 256],
+        byte_decoder: HashMap<char, u8>,
+        /// BOS / EOS token id (GPT-2 uses `<|endoftext|>` for both).
+        pub eos_token_id: Option<u32>,
+        /// BOS token id.
+        pub bos_token_id: Option<u32>,
+        /// PAD token id (not all models have one).
+        pub pad_token_id: Option<u32>,
+    }
+
+    impl BpeTokenizer {
+        /// Constructs a tokenizer from `vocab.json` and `merges.txt` bytes.
+        ///
+        /// `vocab_bytes` must be a UTF-8 JSON object `{"token": id, ...}`.
+        /// `merges_bytes` must be the `merges.txt` format: one `"left right"` merge per line,
+        /// comment lines starting with `#` are ignored.
+        pub fn from_bytes(vocab_bytes: &[u8], merges_bytes: &[u8]) -> Result<Self> {
+            let vocab = parse_vocab_json(vocab_bytes)?;
+            let merges = parse_merges_txt(merges_bytes)?;
+            let byte_encoder = make_byte_encoder();
+            let byte_decoder = make_byte_decoder(&byte_encoder);
+
+            let max_id = vocab.values().copied().max().unwrap_or(0) as usize;
+            let mut decoder = vec![String::new(); max_id + 1];
+            for (token, &id) in &vocab {
+                decoder[id as usize] = token.clone();
+            }
+
+            let eos_token_id = vocab.get("<|endoftext|>").copied();
+            let bos_token_id = eos_token_id;
+            let pad_token_id = vocab.get("<|padding|>").copied();
+
+            Ok(Self {
+                vocab,
+                decoder,
+                merges,
+                byte_encoder,
+                byte_decoder,
+                eos_token_id,
+                bos_token_id,
+                pad_token_id,
+            })
+        }
+
+        /// Vocabulary size.
+        pub fn vocab_size(&self) -> usize {
+            self.vocab.len()
+        }
+
+        /// Encodes `text` into token ids. Appends EOS if present in vocab.
+        /// Truncates to `max_len` (including EOS).
+        pub fn encode(&self, text: &str, max_len: usize) -> Result<BpeEncodedInput> {
+            if max_len == 0 {
+                return Err(Error::InvalidTokenizer("max_len must be > 0"));
+            }
+            let mut ids: Vec<u32> = Vec::new();
+
+            for word in pre_tokenize(text) {
+                let byte_chars: Vec<char> =
+                    word.bytes().map(|b| self.byte_encoder[b as usize]).collect();
+                let tokens = self.bpe_merge(byte_chars);
+                for tok in &tokens {
+                    if ids.len() >= max_len.saturating_sub(self.eos_token_id.is_some() as usize) {
+                        break;
+                    }
+                    let id = self.vocab.get(tok.as_str()).copied().unwrap_or_else(|| {
+                        // Per-char fallback: encode each char separately
+                        self.vocab
+                            .get(&tok.chars().next().unwrap_or(' ').to_string())
+                            .copied()
+                            .unwrap_or(0)
+                    });
+                    ids.push(id);
+                }
+            }
+
+            if let Some(eos) = self.eos_token_id {
+                if ids.len() < max_len {
+                    ids.push(eos);
+                }
+            }
+
+            let len = ids.len();
+            Ok(BpeEncodedInput {
+                attention_mask: vec![1u32; len],
+                input_ids: ids,
+            })
+        }
+
+        /// Encodes and pads to exactly `max_len` using the pad token (0 if absent).
+        pub fn encode_padded(&self, text: &str, max_len: usize) -> Result<BpeEncodedInput> {
+            let mut enc = self.encode(text, max_len)?;
+            let pad = self.pad_token_id.unwrap_or(0);
+            while enc.input_ids.len() < max_len {
+                enc.input_ids.push(pad);
+                enc.attention_mask.push(0);
+            }
+            Ok(enc)
+        }
+
+        /// Decodes token ids back to a UTF-8 string. Invalid byte sequences
+        /// are replaced with the Unicode replacement character.
+        pub fn decode(&self, ids: &[u32]) -> String {
+            let mut bytes: Vec<u8> = Vec::new();
+            for &id in ids {
+                let Some(token) = self.decoder.get(id as usize) else {
+                    continue;
+                };
+                // Skip special tokens (they don't round-trip through byte_decoder)
+                if token.starts_with('<') && token.ends_with('>') {
+                    continue;
+                }
+                for c in token.chars() {
+                    if let Some(&b) = self.byte_decoder.get(&c) {
+                        bytes.push(b);
+                    }
+                }
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+
+        /// Returns the id for a token string, or `None` if not in vocab.
+        pub fn token_id(&self, token: &str) -> Option<u32> {
+            self.vocab.get(token).copied()
+        }
+
+        /// Applies BPE merges to a sequence of single-character tokens.
+        fn bpe_merge(&self, chars: Vec<char>) -> Vec<String> {
+            if chars.is_empty() {
+                return vec![];
+            }
+            let mut tokens: Vec<String> = chars.iter().map(|c| c.to_string()).collect();
+
+            loop {
+                let mut best_rank = u32::MAX;
+                let mut best_idx = usize::MAX;
+
+                for i in 0..tokens.len().saturating_sub(1) {
+                    if let Some(&rank) =
+                        self.merges.get(&(tokens[i].clone(), tokens[i + 1].clone()))
+                    {
+                        if rank < best_rank {
+                            best_rank = rank;
+                            best_idx = i;
+                        }
+                    }
+                }
+
+                if best_idx == usize::MAX {
+                    break;
+                }
+
+                let left = tokens[best_idx].clone();
+                let right = tokens[best_idx + 1].clone();
+                let merged = format!("{left}{right}");
+
+                let mut new_tokens = Vec::with_capacity(tokens.len());
+                let mut i = 0;
+                while i < tokens.len() {
+                    if i + 1 < tokens.len() && tokens[i] == left && tokens[i + 1] == right {
+                        new_tokens.push(merged.clone());
+                        i += 2;
+                    } else {
+                        new_tokens.push(tokens[i].clone());
+                        i += 1;
+                    }
+                }
+                tokens = new_tokens;
+            }
+
+            tokens
+        }
+    }
+
+    /// Splits text into pre-tokenization units, keeping a leading space
+    /// attached to the following word (GPT-2 / Ġ convention).
+    fn pre_tokenize(text: &str) -> Vec<String> {
+        if text.is_empty() {
+            return vec![];
+        }
+        let mut words = Vec::new();
+        let mut current = String::new();
+        let mut pending_space = false;
+
+        for c in text.chars() {
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+                if !current.is_empty() {
+                    words.push(core::mem::take(&mut current));
+                }
+                pending_space = true;
+            } else {
+                if pending_space {
+                    current.push(' ');
+                    pending_space = false;
+                }
+                current.push(c);
+            }
+        }
+        if !current.is_empty() {
+            words.push(current);
+        }
+        words
+    }
+
+    /// Builds the byte → Unicode character table used by GPT-2.
+    ///
+    /// Printable bytes (33–126, 161–172, 174–255) map to themselves.
+    /// The remaining 68 bytes map to U+0100–U+0143 in byte order.
+    fn make_byte_encoder() -> [char; 256] {
+        let mut encoder = ['\0'; 256];
+        let mut extra = 256u32;
+        for b in 0u8..=255 {
+            if super::is_printable_byte(b) {
+                encoder[b as usize] = char::from_u32(b as u32).unwrap_or('\0');
+            } else {
+                encoder[b as usize] = char::from_u32(extra).unwrap_or('\0');
+                extra += 1;
+            }
+        }
+        encoder
+    }
+
+    fn make_byte_decoder(encoder: &[char; 256]) -> HashMap<char, u8> {
+        encoder
+            .iter()
+            .enumerate()
+            .map(|(b, &c)| (c, b as u8))
+            .collect()
+    }
+
+    /// Minimal parser for `{"token": id, ...}` JSON (vocab.json format).
+    fn parse_vocab_json(bytes: &[u8]) -> Result<HashMap<String, u32>> {
+        let text = core::str::from_utf8(bytes)
+            .map_err(|_| Error::InvalidTokenizer("vocab.json is not valid UTF-8"))?;
+        let text = text.trim();
+        if !text.starts_with('{') {
+            return Err(Error::InvalidTokenizer("vocab.json: expected '{'"));
+        }
+
+        let mut map = HashMap::new();
+        let tb = text.as_bytes();
+        let mut pos = 1usize; // skip '{'
+
+        loop {
+            // Skip whitespace and commas
+            while pos < tb.len()
+                && matches!(tb[pos], b' ' | b'\t' | b'\n' | b'\r' | b',')
+            {
+                pos += 1;
+            }
+            if pos >= tb.len() || tb[pos] == b'}' {
+                break;
+            }
+
+            // Parse string key
+            if tb[pos] != b'"' {
+                return Err(Error::InvalidTokenizer("vocab.json: expected string key"));
+            }
+            pos += 1; // skip opening "
+            let (key, consumed) = parse_json_string(&text[pos..])?;
+            pos += consumed;
+
+            // Skip whitespace, then ':'
+            while pos < tb.len() && matches!(tb[pos], b' ' | b'\t') {
+                pos += 1;
+            }
+            if pos >= tb.len() || tb[pos] != b':' {
+                return Err(Error::InvalidTokenizer("vocab.json: expected ':'"));
+            }
+            pos += 1;
+
+            // Skip whitespace
+            while pos < tb.len() && matches!(tb[pos], b' ' | b'\t') {
+                pos += 1;
+            }
+
+            // Parse non-negative integer
+            let start = pos;
+            while pos < tb.len() && tb[pos].is_ascii_digit() {
+                pos += 1;
+            }
+            if start == pos {
+                return Err(Error::InvalidTokenizer("vocab.json: expected integer value"));
+            }
+            let id: u32 = text[start..pos]
+                .parse()
+                .map_err(|_| Error::InvalidTokenizer("vocab.json: token id overflow"))?;
+
+            map.insert(key, id);
+        }
+
+        Ok(map)
+    }
+
+    /// Parses a JSON string starting *after* the opening `"`.
+    /// Returns `(string, bytes_consumed_including_closing_quote)`.
+    fn parse_json_string(s: &str) -> Result<(String, usize)> {
+        let mut result = String::new();
+        let mut iter = s.char_indices();
+        loop {
+            match iter.next() {
+                None => return Err(Error::InvalidTokenizer("vocab.json: unterminated string")),
+                Some((idx, '"')) => return Ok((result, idx + 1)),
+                Some((_, '\\')) => match iter.next() {
+                    None => return Err(Error::InvalidTokenizer("vocab.json: bad escape")),
+                    Some((_, 'n')) => result.push('\n'),
+                    Some((_, 't')) => result.push('\t'),
+                    Some((_, 'r')) => result.push('\r'),
+                    Some((_, '"')) => result.push('"'),
+                    Some((_, '\\')) => result.push('\\'),
+                    Some((_, '/')) => result.push('/'),
+                    Some((_, 'u')) => {
+                        let hex: String = iter.by_ref().take(4).map(|(_, c)| c).collect();
+                        if hex.len() != 4 {
+                            return Err(Error::InvalidTokenizer("vocab.json: short \\u escape"));
+                        }
+                        let code = u32::from_str_radix(&hex, 16)
+                            .map_err(|_| Error::InvalidTokenizer("vocab.json: bad \\u hex"))?;
+                        result.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+                    }
+                    Some((_, c)) => result.push(c),
+                },
+                Some((_, c)) => result.push(c),
+            }
+        }
+    }
+
+    /// Parses `merges.txt`: one `"left right"` merge per line, `#` = comment.
+    fn parse_merges_txt(bytes: &[u8]) -> Result<HashMap<(String, String), u32>> {
+        let text = core::str::from_utf8(bytes)
+            .map_err(|_| Error::InvalidTokenizer("merges.txt is not valid UTF-8"))?;
+        let mut merges = HashMap::new();
+        let mut rank = 0u32;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let sep = line
+                .find(' ')
+                .ok_or(Error::InvalidTokenizer("merges.txt: line missing space"))?;
+            let left = line[..sep].to_string();
+            let right = line[sep + 1..].to_string();
+            merges.insert((left, right), rank);
+            rank += 1;
+        }
+        Ok(merges)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn tiny_vocab_and_merges() -> (Vec<u8>, Vec<u8>) {
+            // Minimal vocab.json covering letters h, e, l, o, space (Ġ = byte 32 → U+0120)
+            let vocab = r#"{"h": 0, "e": 1, "l": 2, "o": 3, "Ġ": 4, "he": 5, "hel": 6, "hell": 7, "hello": 8, "Ġworld": 9, "w": 10, "r": 11, "d": 12, "wo": 13, "wor": 14, "worl": 15, "world": 16, "<|endoftext|>": 50256}"#;
+            let merges = b"#version: 0\nh e\nhe l\nhel l\nhell o\n\xc4\xa0 w\nwo r\nwor l\nworl d\n";
+            // Note: Ġ = U+0120 = 0xC4 0xA0 in UTF-8
+            (vocab.as_bytes().to_vec(), merges.to_vec())
+        }
+
+        #[test]
+        fn byte_encoder_roundtrip() {
+            let enc = make_byte_encoder();
+            let dec = make_byte_decoder(&enc);
+            for b in 0u8..=255 {
+                let c = enc[b as usize];
+                assert_eq!(dec[&c], b, "byte {b} roundtrip failed");
+            }
+        }
+
+        #[test]
+        fn pre_tokenize_attaches_space_to_next_word() {
+            let words = pre_tokenize("hello world");
+            assert_eq!(words, vec!["hello", " world"]);
+        }
+
+        #[test]
+        fn pre_tokenize_single_word() {
+            let words = pre_tokenize("hello");
+            assert_eq!(words, vec!["hello"]);
+        }
+
+        #[test]
+        fn encode_hello_merges_to_single_token() {
+            let (vocab, merges) = tiny_vocab_and_merges();
+            let tok = BpeTokenizer::from_bytes(&vocab, &merges).unwrap();
+            // h+e→he, he+l→hel, hel+l→hell, hell+o→hello → id 8, then EOS 50256 is appended
+            let enc = tok.encode("hello", 128).unwrap();
+            assert_eq!(enc.input_ids[0], 8);
+            assert_eq!(*enc.input_ids.last().unwrap(), 50256); // <|endoftext|>
+        }
+
+        #[test]
+        fn parse_merges_counts_ranks() {
+            let txt = b"#version: gpt2\na b\nc d\ne f\n";
+            let m = parse_merges_txt(txt).unwrap();
+            assert_eq!(m[&("a".to_string(), "b".to_string())], 0);
+            assert_eq!(m[&("c".to_string(), "d".to_string())], 1);
+            assert_eq!(m[&("e".to_string(), "f".to_string())], 2);
+        }
     }
 }

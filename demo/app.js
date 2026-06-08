@@ -1,197 +1,188 @@
-// Entry point for the wasmicro demo page.
-//
-// Imports the wasm-pack output from ./pkg/wasmicro.js. The CI workflow at
-// .github/workflows/pages.yml builds this directory and uploads it to
-// GitHub Pages — there is no local build step required to view changes.
+/**
+ * wasmicro demo — unified Pipeline API.
+ *
+ * Supports BERT (embedding / semantic search), GPT-2 and T5 (text generation).
+ * Model type is auto-detected from config.json — no hardcoded parameters needed.
+ */
 
 import init, {
   version,
   matmul_bench,
   init_panic_hook,
-  WasmBertModel,
-  WasmWordPieceTokenizer,
+  WasmPipeline,
 } from "./pkg/wasmicro.js";
 
 const $ = (id) => document.getElementById(id);
 
-async function fetchBundleSize() {
-  try {
-    const res = await fetch("./pkg/wasmicro_bg.wasm", { method: "HEAD" });
-    const len = res.headers.get("Content-Length");
-    if (!len) return "unknown";
-    const kb = (Number(len) / 1024).toFixed(1);
-    return `${kb} KB`;
-  } catch {
-    return "unknown";
-  }
-}
+// ─── bootstrap ────────────────────────────────────────────────────────────────
 
 async function main() {
-  // 1. Load WASM and measure cold start.
   const t0 = performance.now();
   await init();
   const t1 = performance.now();
-
   init_panic_hook();
 
-  $("status").textContent = "ready";
-  $("version").textContent = `v${version()}`;
+  $("status").textContent    = "ready";
+  $("version").textContent   = `v${version()}`;
   $("load-time").textContent = `${(t1 - t0).toFixed(1)} ms`;
-  $("bundle-size").textContent = await fetchBundleSize();
 
-  // 2. Matmul benchmark.
+  try {
+    const res = await fetch("./pkg/wasmicro_bg.wasm", { method: "HEAD" });
+    const kb  = Number(res.headers.get("Content-Length") ?? 0) / 1024;
+    $("bundle-size").textContent = kb ? `${kb.toFixed(1)} KB` : "unknown";
+  } catch { $("bundle-size").textContent = "unknown"; }
+
+  setupBench();
+  setupPipeline();
+}
+
+// ─── matmul benchmark ────────────────────────────────────────────────────────
+
+function setupBench() {
   $("run-bench").addEventListener("click", () => {
     const n = Number($("n-input").value) || 128;
     $("bench-result").textContent = "running…";
-    // Run on next frame so the UI can update first.
     requestAnimationFrame(() => {
       try {
-        // Warm-up.
-        matmul_bench(32);
-        const start = performance.now();
-        const head = matmul_bench(n);
-        const elapsed = (performance.now() - start) / 1000;
-        const flops = 2 * n * n * n;
-        const gflops = flops / elapsed / 1e9;
-        $("bench-result").textContent = [
-          `n = ${n}`,
-          `time = ${(elapsed * 1000).toFixed(2)} ms`,
-          `GFLOPS = ${gflops.toFixed(2)}`,
-          `first-cell sanity = ${head}`,
-        ].join("\n");
-      } catch (err) {
-        $("bench-result").textContent = `error: ${err.message ?? err}`;
+        matmul_bench(32); // warm-up
+        const t0  = performance.now();
+        const val = matmul_bench(n);
+        const ms  = performance.now() - t0;
+        const gf  = 2 * n ** 3 / (ms / 1000) / 1e9;
+        $("bench-result").textContent =
+          `n=${n}  time=${ms.toFixed(2)} ms  GFLOPS=${gf.toFixed(2)}  cell[0]=${val}`;
+      } catch (e) {
+        $("bench-result").textContent = `error: ${e.message ?? e}`;
       }
     });
   });
+}
 
-  // 3. BERT model loading.
-  let modelBytes = null;
-  let vocabBytes = null;
-  let model = null;
-  let tokenizer = null;
+// ─── Pipeline loader ─────────────────────────────────────────────────────────
 
-  const refreshLoadButton = () => {
-    $("load-model").disabled = !(modelBytes && vocabBytes);
+function setupPipeline() {
+  // File state
+  let files = { model: null, tokenizer: null, config: null, merges: null };
+  let pipeline = null;
+  let modelType = "";
+
+  // Update the "Load" button state
+  const refreshBtn = () => {
+    $("load-pipeline").disabled = !(files.model && files.tokenizer && files.config);
   };
 
-  const resetLoadedModel = () => {
-    model = null;
-    tokenizer = null;
-    $("run-search").disabled = true;
-  };
-
-  $("model-file").addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    resetLoadedModel();
-    modelBytes = new Uint8Array(await file.arrayBuffer());
-    $("model-status").textContent =
-      `selected: ${file.name} (${(modelBytes.byteLength / 1024 / 1024).toFixed(2)} MB)\n` +
-      "select vocab.txt, then click Load.";
-    refreshLoadButton();
+  // Collect uploaded files
+  ["model", "tokenizer", "config", "merges"].forEach((key) => {
+    const el = $(`file-${key}`);
+    if (!el) return;
+    el.addEventListener("change", async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      files[key] = new Uint8Array(await f.arrayBuffer());
+      $("pipeline-status").textContent = `${key}: ${f.name} (${(files[key].byteLength / 1024).toFixed(1)} KB)`;
+      refreshBtn();
+    });
   });
 
-  $("vocab-file").addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    resetLoadedModel();
-    vocabBytes = new Uint8Array(await file.arrayBuffer());
-    $("model-status").textContent =
-      `selected: ${file.name} (${(vocabBytes.byteLength / 1024).toFixed(1)} KB)\n` +
-      "select model.safetensors, then click Load.";
-    refreshLoadButton();
-  });
-
-  $("load-model").addEventListener("click", () => {
-    if (!modelBytes || !vocabBytes) return;
+  // Load the pipeline
+  $("load-pipeline").addEventListener("click", async () => {
+    $("pipeline-status").textContent = "loading…";
+    pipeline = null;
     try {
-      // Hardcoded to all-MiniLM-L6-v2 config for the demo.
-      const t0 = performance.now();
-      tokenizer = new WasmWordPieceTokenizer(vocabBytes, true);
-      model = new WasmBertModel(
-        modelBytes,
-        /* hidden_size            */ 384,
-        /* num_hidden_layers      */ 6,
-        /* num_attention_heads    */ 12,
-        /* intermediate_size      */ 1536,
-        /* vocab_size             */ 30522,
-        /* max_position_embeddings*/ 512,
-        /* type_vocab_size        */ 2,
-        /* prefix                 */ "",
-      );
-      const t1 = performance.now();
+      const configJson = new TextDecoder().decode(files.config);
+      modelType = WasmPipeline.detectedModelType(configJson);
 
-      $("run-search").disabled = false;
-      $("model-status").textContent = [
-        `loaded in ${(t1 - t0).toFixed(1)} ms`,
-        "ready for semantic search",
-      ].join("\n");
-    } catch (err) {
-      resetLoadedModel();
-      $("model-status").textContent = `error: ${err.message ?? err}`;
+      const t0 = performance.now();
+      pipeline = WasmPipeline.fromBytes(
+        files.model,
+        files.tokenizer,
+        configJson,
+        files.merges ?? null,
+      );
+      const ms = (performance.now() - t0).toFixed(1);
+
+      $("pipeline-status").textContent =
+        `loaded in ${ms} ms — model_type: "${modelType}"`;
+
+      // Show the right panel
+      $("bert-section").hidden    = !["bert","roberta","distilbert","electra"].includes(modelType);
+      $("gen-section").hidden     = !["gpt2","gpt_neo","gpt_neox","t5","mt5","longt5"].includes(modelType);
+      $("gen-title").textContent  = modelType.startsWith("t5") || modelType.startsWith("mt5")
+        ? "T5 generation (include task prefix, e.g. "translate English to French: Hello")"
+        : "GPT-2 generation";
+
+    } catch (e) {
+      $("pipeline-status").textContent = `error: ${e.message ?? e}`;
     }
   });
+
+  // ── BERT: semantic search ──────────────────────────────────────────────────
 
   $("run-search").addEventListener("click", () => {
-    if (!model || !tokenizer) return;
+    if (!pipeline) return;
     try {
-      const text = $("query-text").value || "hello world";
-      const maxLen = Number($("max-len").value) || 32;
-      const t2 = performance.now();
-      const queryEmbedding = normalize(model.embed_text(tokenizer, text, maxLen));
-      const documents = $("documents")
-        .value
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean);
+      const query   = $("query-text").value.trim() || "hello world";
+      const maxLen  = Number($("max-len").value) || 64;
+      const docs    = $("documents").value.split("\n").map(s => s.trim()).filter(Boolean);
+      if (!docs.length) { $("search-output").textContent = "(no documents)"; return; }
 
-      const results = documents.map((document, index) => {
-        const embedding = normalize(model.embed_text(tokenizer, document, maxLen));
-        return {
-          index,
-          document,
-          score: dot(queryEmbedding, embedding),
-        };
-      });
-      results.sort((a, b) => b.score - a.score);
-      const t3 = performance.now();
+      const t0    = performance.now();
+      const qEmb  = normalize(pipeline.embed(query, maxLen));
+      const all   = pipeline.embedBatch(docs, maxLen);
+      const dim   = all.length / docs.length;
 
-      $("model-status").textContent = [
-        `query: "${text}"`,
-        `documents: ${documents.length}`,
-        `search time: ${(t3 - t2).toFixed(1)} ms`,
+      const scored = docs.map((doc, i) => {
+        const dEmb = normalize(all.slice(i * dim, (i + 1) * dim));
+        return { doc, score: dot(qEmb, dEmb) };
+      }).sort((a, b) => b.score - a.score);
+
+      const ms = (performance.now() - t0).toFixed(1);
+      $("search-output").textContent = [
+        `query: "${query}"  (${ms} ms, dim=${dim})`,
         "",
-        ...results.map(
-          (result, rank) =>
-            `${rank + 1}. score=${result.score.toFixed(4)} doc#${result.index + 1}: ${result.document}`,
-        ),
+        ...scored.map((r, i) => `${i + 1}. [${r.score.toFixed(4)}] ${r.doc}`),
       ].join("\n");
-    } catch (err) {
-      $("model-status").textContent = `error: ${err.message ?? err}`;
+    } catch (e) {
+      $("search-output").textContent = `error: ${e.message ?? e}`;
     }
+  });
+
+  // ── GPT-2 / T5: text generation ───────────────────────────────────────────
+
+  $("run-generate").addEventListener("click", () => {
+    if (!pipeline) return;
+    $("gen-output").textContent = "generating…";
+    const prompt  = $("gen-prompt").value || "Once upon a time";
+    const maxToks = Number($("gen-tokens").value) || 50;
+
+    requestAnimationFrame(() => {
+      try {
+        const t0   = performance.now();
+        const text = pipeline.generate(prompt, maxToks);
+        const ms   = (performance.now() - t0).toFixed(0);
+        $("gen-output").textContent = `[${ms} ms]\n${text}`;
+      } catch (e) {
+        $("gen-output").textContent = `error: ${e.message ?? e}`;
+      }
+    });
   });
 }
 
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
 function dot(a, b) {
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) {
-    sum += a[i] * b[i];
-  }
-  return sum;
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
 }
 
-function normalize(vector) {
-  let norm = 0;
-  for (const value of vector) {
-    norm += value * value;
-  }
-  norm = Math.sqrt(norm);
-  if (norm === 0) return vector;
-  const out = new Float32Array(vector.length);
-  for (let i = 0; i < vector.length; i++) {
-    out[i] = vector[i] / norm;
-  }
+function normalize(v) {
+  let n = 0;
+  for (const x of v) n += x * x;
+  n = Math.sqrt(n);
+  if (n === 0) return Float32Array.from(v);
+  const out = new Float32Array(v.length);
+  for (let i = 0; i < v.length; i++) out[i] = v[i] / n;
   return out;
 }
 
