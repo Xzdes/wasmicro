@@ -577,8 +577,10 @@ pub mod bpe {
             let mut ids: Vec<u32> = Vec::new();
 
             for word in pre_tokenize(text) {
-                let byte_chars: Vec<char> =
-                    word.bytes().map(|b| self.byte_encoder[b as usize]).collect();
+                let byte_chars: Vec<char> = word
+                    .bytes()
+                    .map(|b| self.byte_encoder[b as usize])
+                    .collect();
                 let tokens = self.bpe_merge(byte_chars);
                 for tok in &tokens {
                     if ids.len() >= max_len.saturating_sub(self.eos_token_id.is_some() as usize) {
@@ -764,9 +766,7 @@ pub mod bpe {
 
         loop {
             // Skip whitespace and commas
-            while pos < tb.len()
-                && matches!(tb[pos], b' ' | b'\t' | b'\n' | b'\r' | b',')
-            {
+            while pos < tb.len() && matches!(tb[pos], b' ' | b'\t' | b'\n' | b'\r' | b',') {
                 pos += 1;
             }
             if pos >= tb.len() || tb[pos] == b'}' {
@@ -801,7 +801,9 @@ pub mod bpe {
                 pos += 1;
             }
             if start == pos {
-                return Err(Error::InvalidTokenizer("vocab.json: expected integer value"));
+                return Err(Error::InvalidTokenizer(
+                    "vocab.json: expected integer value",
+                ));
             }
             let id: u32 = text[start..pos]
                 .parse()
@@ -875,7 +877,8 @@ pub mod bpe {
         fn tiny_vocab_and_merges() -> (Vec<u8>, Vec<u8>) {
             // Minimal vocab.json covering letters h, e, l, o, space (Ġ = byte 32 → U+0120)
             let vocab = r#"{"h": 0, "e": 1, "l": 2, "o": 3, "Ġ": 4, "he": 5, "hel": 6, "hell": 7, "hello": 8, "Ġworld": 9, "w": 10, "r": 11, "d": 12, "wo": 13, "wor": 14, "worl": 15, "world": 16, "<|endoftext|>": 50256}"#;
-            let merges = b"#version: 0\nh e\nhe l\nhel l\nhell o\n\xc4\xa0 w\nwo r\nwor l\nworl d\n";
+            let merges =
+                b"#version: 0\nh e\nhe l\nhel l\nhell o\n\xc4\xa0 w\nwo r\nwor l\nworl d\n";
             // Note: Ġ = U+0120 = 0xC4 0xA0 in UTF-8
             (vocab.as_bytes().to_vec(), merges.to_vec())
         }

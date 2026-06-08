@@ -75,37 +75,45 @@ impl Gpt2Config {
             let start = json.find(&pattern)? + pattern.len();
             let rest = json[start..].trim_start();
             let end = rest.find(|c: char| !c.is_ascii_digit())?;
-            if end == 0 { return None; }
+            if end == 0 {
+                return None;
+            }
             rest[..end].parse().ok()
         };
         let extract_f32 = |key: &str| -> Option<f32> {
             let pattern = format!("\"{key}\":");
             let start = json.find(&pattern)? + pattern.len();
             let rest = json[start..].trim_start();
-            let end = rest.find(|c: char| {
-                !matches!(c, '-' | '+' | '.' | 'e' | 'E') && !c.is_ascii_digit()
-            })?;
-            if end == 0 { return None; }
+            let end = rest
+                .find(|c: char| !matches!(c, '-' | '+' | '.' | 'e' | 'E') && !c.is_ascii_digit())?;
+            if end == 0 {
+                return None;
+            }
             rest[..end].parse().ok()
         };
 
         // n_embd / n_head / n_layer are HF's field names for GPT-2.
         let hidden_size = extract_usize("n_embd")
             .or_else(|| extract_usize("hidden_size"))
-            .ok_or(Error::InvalidInput("config.json: missing n_embd/hidden_size"))?;
+            .ok_or(Error::InvalidInput(
+                "config.json: missing n_embd/hidden_size",
+            ))?;
         let num_hidden_layers = extract_usize("n_layer")
             .or_else(|| extract_usize("num_hidden_layers"))
-            .ok_or(Error::InvalidInput("config.json: missing n_layer/num_hidden_layers"))?;
+            .ok_or(Error::InvalidInput(
+                "config.json: missing n_layer/num_hidden_layers",
+            ))?;
         let num_attention_heads = extract_usize("n_head")
             .or_else(|| extract_usize("num_attention_heads"))
-            .ok_or(Error::InvalidInput("config.json: missing n_head/num_attention_heads"))?;
+            .ok_or(Error::InvalidInput(
+                "config.json: missing n_head/num_attention_heads",
+            ))?;
 
         Ok(Self {
             hidden_size,
             num_hidden_layers,
             num_attention_heads,
-            intermediate_size: extract_usize("n_inner")
-                .unwrap_or(4 * hidden_size),
+            intermediate_size: extract_usize("n_inner").unwrap_or(4 * hidden_size),
             vocab_size: extract_usize("vocab_size")
                 .ok_or(Error::InvalidInput("config.json: missing vocab_size"))?,
             max_position_embeddings: extract_usize("n_positions")
@@ -147,12 +155,12 @@ struct Gpt2Layer {
 pub struct Gpt2Model {
     /// Architectural config.
     pub config: Gpt2Config,
-    wte: Tensor,      // token embeddings [vocab, hidden]
-    wpe: Tensor,      // position embeddings [max_pos, hidden]
+    wte: Tensor, // token embeddings [vocab, hidden]
+    wpe: Tensor, // position embeddings [max_pos, hidden]
     layers: Vec<Gpt2Layer>,
-    ln_f_w: Tensor,   // final layer norm weight
-    ln_f_b: Tensor,   // final layer norm bias
-    lm_head: Tensor,  // [vocab, hidden] (may be tied with wte)
+    ln_f_w: Tensor,  // final layer norm weight
+    ln_f_b: Tensor,  // final layer norm bias
+    lm_head: Tensor, // [vocab, hidden] (may be tied with wte)
     /// EOS token id. GPT-2 uses `<|endoftext|>` (id 50256).
     pub eos_token_id: Option<u32>,
 }
@@ -246,7 +254,8 @@ impl Gpt2Model {
             let ln1 = layer_norm(&h, &layer.ln_1_w, &layer.ln_1_b, self.config.layer_norm_eps);
             let qkv = linear(&ln1, &layer.attn.c_attn_w, Some(&layer.attn.c_attn_b));
             let (q, k, v) = split_qkv(&qkv, self.config.hidden_size);
-            let attn_out = causal_multi_head_attention_from_qkv(&q, &k, &v, self.config.num_attention_heads);
+            let attn_out =
+                causal_multi_head_attention_from_qkv(&q, &k, &v, self.config.num_attention_heads);
             let attn_proj = linear(&attn_out, &layer.attn.c_proj_w, Some(&layer.attn.c_proj_b));
             h = add(&h, &attn_proj);
 
@@ -272,10 +281,7 @@ impl Gpt2Model {
         let all = self.logits(input_ids);
         let vocab = self.config.vocab_size;
         let last_off = (input_ids.len() - 1) * vocab;
-        Tensor::from_vec(
-            all.data()[last_off..last_off + vocab].to_vec(),
-            &[vocab],
-        )
+        Tensor::from_vec(all.data()[last_off..last_off + vocab].to_vec(), &[vocab])
     }
 
     /// Greedy autoregressive generation.
@@ -426,10 +432,7 @@ mod tests {
         let model = build_tiny_gpt2();
         let ids = vec![1u32, 2];
         let out = model.logits(&ids);
-        assert_eq!(
-            out.shape().as_slice(),
-            &[2, model.config.vocab_size]
-        );
+        assert_eq!(out.shape().as_slice(), &[2, model.config.vocab_size]);
     }
 
     #[test]

@@ -40,8 +40,8 @@ use crate::models::bert::{BertConfig, BertModel};
 use crate::models::gpt2::{Gpt2Config, Gpt2Model};
 use crate::models::t5::{T5Config, T5Model};
 use crate::tensor::Tensor;
-use crate::tokenizer::{WordPieceOptions, WordPieceTokenizer};
 use crate::tokenizer::bpe::BpeTokenizer;
+use crate::tokenizer::{WordPieceOptions, WordPieceTokenizer};
 
 enum Inner {
     Bert {
@@ -89,9 +89,7 @@ impl Pipeline {
                 let lowercase = !config_json.contains("\"uncased\"")
                     && config_json
                         .find("\"do_lower_case\"")
-                        .and_then(|p| {
-                            config_json[p..].find("true").map(|q| q < 20)
-                        })
+                        .and_then(|p| config_json[p..].find("true").map(|q| q < 20))
                         .unwrap_or(true);
                 let tokenizer = WordPieceTokenizer::from_vocab_bytes_with_options(
                     tokenizer_bytes,
@@ -143,7 +141,9 @@ impl Pipeline {
     pub fn embed(&self, text: &str, max_len: usize) -> Result<Tensor> {
         match &self.inner {
             Inner::Bert { model, tokenizer } => model.embed_text(tokenizer, text, max_len),
-            _ => Err(Error::InvalidInput("embed() is only supported for BERT-family models")),
+            _ => Err(Error::InvalidInput(
+                "embed() is only supported for BERT-family models",
+            )),
         }
     }
 
@@ -154,7 +154,9 @@ impl Pipeline {
     pub fn embed_batch(&self, texts: &[&str], max_len: usize) -> Result<Vec<Tensor>> {
         match &self.inner {
             Inner::Bert { model, tokenizer } => model.embed_batch(tokenizer, texts, max_len),
-            _ => Err(Error::InvalidInput("embed_batch() is only supported for BERT-family models")),
+            _ => Err(Error::InvalidInput(
+                "embed_batch() is only supported for BERT-family models",
+            )),
         }
     }
 
@@ -180,9 +182,9 @@ impl Pipeline {
                 let out_ids = model.generate_greedy(&enc.input_ids, max_new_tokens);
                 Ok(tokenizer.decode(&out_ids))
             }
-            Inner::Bert { .. } => {
-                Err(Error::InvalidInput("generate() is not supported for BERT-family models"))
-            }
+            Inner::Bert { .. } => Err(Error::InvalidInput(
+                "generate() is not supported for BERT-family models",
+            )),
         }
     }
 
@@ -198,7 +200,9 @@ impl Pipeline {
                 let enc = tokenizer.encode(text, max_len)?;
                 Ok(model.encode(&enc.input_ids))
             }
-            _ => Err(Error::InvalidInput("encode_t5() is only valid for T5-family models")),
+            _ => Err(Error::InvalidInput(
+                "encode_t5() is only valid for T5-family models",
+            )),
         }
     }
 }

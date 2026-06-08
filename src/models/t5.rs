@@ -109,30 +109,37 @@ impl T5Config {
             let start = json.find(&pattern)? + pattern.len();
             let rest = json[start..].trim_start();
             let end = rest.find(|c: char| !c.is_ascii_digit())?;
-            if end == 0 { return None; }
+            if end == 0 {
+                return None;
+            }
             rest[..end].parse().ok()
         };
         let extract_f32 = |key: &str| -> Option<f32> {
             let pattern = format!("\"{key}\":");
             let start = json.find(&pattern)? + pattern.len();
             let rest = json[start..].trim_start();
-            let end = rest.find(|c: char| {
-                !matches!(c, '-' | '+' | '.' | 'e' | 'E') && !c.is_ascii_digit()
-            })?;
-            if end == 0 { return None; }
+            let end = rest
+                .find(|c: char| !matches!(c, '-' | '+' | '.' | 'e' | 'E') && !c.is_ascii_digit())?;
+            if end == 0 {
+                return None;
+            }
             rest[..end].parse().ok()
         };
         let extract_bool = |key: &str| -> Option<bool> {
             let pattern = format!("\"{key}\":");
             let start = json.find(&pattern)? + pattern.len();
             let rest = json[start..].trim_start();
-            if rest.starts_with("true") { Some(true) }
-            else if rest.starts_with("false") { Some(false) }
-            else { None }
+            if rest.starts_with("true") {
+                Some(true)
+            } else if rest.starts_with("false") {
+                Some(false)
+            } else {
+                None
+            }
         };
 
-        let d_model = extract_usize("d_model")
-            .ok_or(Error::InvalidInput("config.json: missing d_model"))?;
+        let d_model =
+            extract_usize("d_model").ok_or(Error::InvalidInput("config.json: missing d_model"))?;
         let num_layers = extract_usize("num_layers").unwrap_or(6);
         Ok(Self {
             d_model,
@@ -158,10 +165,10 @@ impl T5Config {
 // ─── weight structs ──────────────────────────────────────────────────────────
 
 struct T5SelfAttention {
-    q_w: Tensor,   // [inner_dim, d_model]
+    q_w: Tensor, // [inner_dim, d_model]
     k_w: Tensor,
     v_w: Tensor,
-    o_w: Tensor,   // [d_model, inner_dim]
+    o_w: Tensor, // [d_model, inner_dim]
     // Relative position bias — only present on the first layer.
     rel_bias: Option<Tensor>, // [num_heads, num_buckets]
 }
@@ -174,9 +181,9 @@ struct T5CrossAttention {
 }
 
 struct T5Ffn {
-    wi_w: Tensor,       // [d_ff, d_model] — or wi_0 for gated
+    wi_w: Tensor,              // [d_ff, d_model] — or wi_0 for gated
     wi_gate_w: Option<Tensor>, // [d_ff, d_model] wi_1 for gated
-    wo_w: Tensor,       // [d_model, d_ff]
+    wo_w: Tensor,              // [d_model, d_ff]
 }
 
 struct T5EncoderLayer {
@@ -202,12 +209,12 @@ struct T5DecoderLayer {
 pub struct T5Model {
     /// Architectural configuration.
     pub config: T5Config,
-    shared_emb: Tensor,            // [vocab, d_model]
+    shared_emb: Tensor, // [vocab, d_model]
     encoder_layers: Vec<T5EncoderLayer>,
     encoder_final_ln: Tensor,
     decoder_layers: Vec<T5DecoderLayer>,
     decoder_final_ln: Tensor,
-    lm_head: Tensor,               // [vocab, d_model]
+    lm_head: Tensor, // [vocab, d_model]
     /// EOS / pad token id. T5 uses id 1 (`</s>`).
     pub eos_token_id: u32,
     /// Decoder start token id. T5 uses id 0 (`<pad>`).
@@ -240,11 +247,17 @@ impl T5Model {
 
         let load_ffn = |prefix: &str, layer_idx: usize, layer_offset: usize| -> Result<T5Ffn> {
             let p = format!("{prefix}.block.{layer_idx}.layer.{layer_offset}");
-            let name = if config.is_gated_act { "DenseActDense" } else { "DenseReluDense" };
+            let name = if config.is_gated_act {
+                "DenseActDense"
+            } else {
+                "DenseReluDense"
+            };
             let ffn_p = format!("{p}.{name}");
             let (wi_w, wi_gate_w) = if config.is_gated_act {
-                (load(&format!("{ffn_p}.wi_0.weight"))?,
-                 Some(load(&format!("{ffn_p}.wi_1.weight"))?))
+                (
+                    load(&format!("{ffn_p}.wi_0.weight"))?,
+                    Some(load(&format!("{ffn_p}.wi_1.weight"))?),
+                )
             } else {
                 (load(&format!("{ffn_p}.wi.weight"))?, None)
             };
@@ -268,7 +281,10 @@ impl T5Model {
         let mut decoder_layers = Vec::with_capacity(config.num_decoder_layers);
         for i in 0..config.num_decoder_layers {
             let dec_rel_bias = if i == 0 {
-                load(&format!("decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight")).ok()
+                load(&format!(
+                    "decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight"
+                ))
+                .ok()
             } else {
                 None
             };
@@ -282,10 +298,18 @@ impl T5Model {
                 },
                 self_attn_ln: load(&format!("decoder.block.{i}.layer.0.layer_norm.weight"))?,
                 cross_attn: T5CrossAttention {
-                    q_w: load(&format!("decoder.block.{i}.layer.1.EncDecAttention.q.weight"))?,
-                    k_w: load(&format!("decoder.block.{i}.layer.1.EncDecAttention.k.weight"))?,
-                    v_w: load(&format!("decoder.block.{i}.layer.1.EncDecAttention.v.weight"))?,
-                    o_w: load(&format!("decoder.block.{i}.layer.1.EncDecAttention.o.weight"))?,
+                    q_w: load(&format!(
+                        "decoder.block.{i}.layer.1.EncDecAttention.q.weight"
+                    ))?,
+                    k_w: load(&format!(
+                        "decoder.block.{i}.layer.1.EncDecAttention.k.weight"
+                    ))?,
+                    v_w: load(&format!(
+                        "decoder.block.{i}.layer.1.EncDecAttention.v.weight"
+                    ))?,
+                    o_w: load(&format!(
+                        "decoder.block.{i}.layer.1.EncDecAttention.o.weight"
+                    ))?,
                 },
                 cross_attn_ln: load(&format!("decoder.block.{i}.layer.1.layer_norm.weight"))?,
                 ffn: load_ffn("decoder", i, 2)?,
@@ -318,13 +342,20 @@ impl T5Model {
     /// Returns hidden states `[input_len, d_model]`.
     pub fn encode(&self, input_ids: &[u32]) -> Tensor {
         let mut h = embedding(input_ids, &self.shared_emb);
-        let enc_bias = self.encoder_layers.first()
+        let enc_bias = self
+            .encoder_layers
+            .first()
             .and_then(|l| l.self_attn.rel_bias.as_ref())
-            .map(|b| compute_relative_bias(
-                b, input_ids.len(), input_ids.len(), true,
-                self.config.relative_attention_num_buckets,
-                self.config.relative_attention_max_distance,
-            ));
+            .map(|b| {
+                compute_relative_bias(
+                    b,
+                    input_ids.len(),
+                    input_ids.len(),
+                    true,
+                    self.config.relative_attention_num_buckets,
+                    self.config.relative_attention_max_distance,
+                )
+            });
 
         for (i, layer) in self.encoder_layers.iter().enumerate() {
             let bias = if i == 0 { enc_bias.as_ref() } else { None };
@@ -338,19 +369,22 @@ impl T5Model {
     /// `decoder_ids`: decoder input ids (including `decoder_start_token_id`).
     /// `encoder_output`: from [`T5Model::encode`].
     /// Returns logits `[decoder_len, vocab_size]`.
-    pub fn decode_step(
-        &self,
-        decoder_ids: &[u32],
-        encoder_output: &Tensor,
-    ) -> Tensor {
+    pub fn decode_step(&self, decoder_ids: &[u32], encoder_output: &Tensor) -> Tensor {
         let mut h = embedding(decoder_ids, &self.shared_emb);
-        let dec_bias = self.decoder_layers.first()
+        let dec_bias = self
+            .decoder_layers
+            .first()
             .and_then(|l| l.self_attn.rel_bias.as_ref())
-            .map(|b| compute_relative_bias(
-                b, decoder_ids.len(), decoder_ids.len(), false,
-                self.config.relative_attention_num_buckets,
-                self.config.relative_attention_max_distance,
-            ));
+            .map(|b| {
+                compute_relative_bias(
+                    b,
+                    decoder_ids.len(),
+                    decoder_ids.len(),
+                    false,
+                    self.config.relative_attention_num_buckets,
+                    self.config.relative_attention_max_distance,
+                )
+            });
 
         for (i, layer) in self.decoder_layers.iter().enumerate() {
             let bias = if i == 0 { dec_bias.as_ref() } else { None };
@@ -423,7 +457,8 @@ fn decoder_layer_forward(
     let q = linear(&normed, &layer.self_attn.q_w, None);
     let k = linear(&normed, &layer.self_attn.k_w, None);
     let v = linear(&normed, &layer.self_attn.v_w, None);
-    let self_attn = multi_head_attention_with_bias(&q, &k, &v, config.num_heads, position_bias, true);
+    let self_attn =
+        multi_head_attention_with_bias(&q, &k, &v, config.num_heads, position_bias, true);
     let self_proj = linear(&self_attn, &layer.self_attn.o_w, None);
     let x = add(x, &self_proj);
 
@@ -483,8 +518,7 @@ pub fn compute_relative_bias(
             let bucket = relative_position_bucket(rel, bidirectional, num_buckets, max_distance);
             for h in 0..num_heads {
                 // weight layout: [bucket, head]
-                out[h * q_len * k_len + qi * k_len + ki] =
-                    bw[bucket * num_heads + h];
+                out[h * q_len * k_len + qi * k_len + ki] = bw[bucket * num_heads + h];
             }
         }
     }
@@ -542,7 +576,10 @@ mod tests {
         let b0 = relative_position_bucket(0, true, 32, 128);
         let bpos = relative_position_bucket(1, true, 32, 128);
         let bneg = relative_position_bucket(-1, true, 32, 128);
-        assert!(bpos > b0, "positive should map to higher bucket with bidirectional");
+        assert!(
+            bpos > b0,
+            "positive should map to higher bucket with bidirectional"
+        );
         let _ = bneg;
     }
 

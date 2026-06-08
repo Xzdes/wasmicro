@@ -74,9 +74,8 @@ impl BertConfig {
             let pattern = format!("\"{key}\":");
             let start = json.find(&pattern)? + pattern.len();
             let rest = json[start..].trim_start();
-            let end = rest.find(|c: char| {
-                !matches!(c, '-' | '+' | '.' | 'e' | 'E') && !c.is_ascii_digit()
-            })?;
+            let end = rest
+                .find(|c: char| !matches!(c, '-' | '+' | '.' | 'e' | 'E') && !c.is_ascii_digit())?;
             if end == 0 {
                 return None;
             }
@@ -86,16 +85,20 @@ impl BertConfig {
         let config = Self {
             hidden_size: extract_usize("hidden_size")
                 .ok_or(Error::InvalidInput("config.json: missing hidden_size"))?,
-            num_hidden_layers: extract_usize("num_hidden_layers")
-                .ok_or(Error::InvalidInput("config.json: missing num_hidden_layers"))?,
-            num_attention_heads: extract_usize("num_attention_heads")
-                .ok_or(Error::InvalidInput("config.json: missing num_attention_heads"))?,
-            intermediate_size: extract_usize("intermediate_size")
-                .ok_or(Error::InvalidInput("config.json: missing intermediate_size"))?,
+            num_hidden_layers: extract_usize("num_hidden_layers").ok_or(Error::InvalidInput(
+                "config.json: missing num_hidden_layers",
+            ))?,
+            num_attention_heads: extract_usize("num_attention_heads").ok_or(
+                Error::InvalidInput("config.json: missing num_attention_heads"),
+            )?,
+            intermediate_size: extract_usize("intermediate_size").ok_or(Error::InvalidInput(
+                "config.json: missing intermediate_size",
+            ))?,
             vocab_size: extract_usize("vocab_size")
                 .ok_or(Error::InvalidInput("config.json: missing vocab_size"))?,
-            max_position_embeddings: extract_usize("max_position_embeddings")
-                .ok_or(Error::InvalidInput("config.json: missing max_position_embeddings"))?,
+            max_position_embeddings: extract_usize("max_position_embeddings").ok_or(
+                Error::InvalidInput("config.json: missing max_position_embeddings"),
+            )?,
             type_vocab_size: extract_usize("type_vocab_size").unwrap_or(2),
             layer_norm_eps: extract_f32("layer_norm_eps").unwrap_or(1e-12),
         };

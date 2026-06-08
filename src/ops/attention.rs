@@ -249,12 +249,7 @@ pub fn causal_multi_head_attention_from_qkv(
 /// - `q`: shape `[q_len, hidden]`
 /// - `k`, `v`: shape `[kv_len, hidden]`
 /// - returned tensor shape: `[q_len, hidden]`
-pub fn cross_attention_from_qkv(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    num_heads: usize,
-) -> Tensor {
+pub fn cross_attention_from_qkv(q: &Tensor, k: &Tensor, v: &Tensor, num_heads: usize) -> Tensor {
     let q_shape = q.shape().as_slice();
     let q_len = q_shape[0];
     let hidden = q_shape[1];

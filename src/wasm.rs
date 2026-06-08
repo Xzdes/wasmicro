@@ -34,8 +34,8 @@ use crate::models::t5::{T5Config, T5Model};
 use crate::ops::matmul::matmul;
 use crate::pipeline::Pipeline;
 use crate::tensor::Tensor;
-use crate::tokenizer::{EncodedInput, WordPieceOptions, WordPieceTokenizer};
 use crate::tokenizer::bpe::BpeTokenizer;
+use crate::tokenizer::{EncodedInput, WordPieceOptions, WordPieceTokenizer};
 
 // ─── utilities ───────────────────────────────────────────────────────────────
 
@@ -60,7 +60,9 @@ pub fn matmul_bench(n: usize) -> Result<f32, JsError> {
     if n == 0 || n > 2048 {
         return Err(JsError::new("n must be in the range 1..=2048"));
     }
-    let len = n.checked_mul(n).ok_or_else(|| JsError::new("matrix size overflow"))?;
+    let len = n
+        .checked_mul(n)
+        .ok_or_else(|| JsError::new("matrix size overflow"))?;
     let a = Tensor::from_vec(vec![1.0; len], &[n, n]);
     let b = Tensor::from_vec(vec![1.0; len], &[n, n]);
     let c = matmul(&a, &b);
@@ -80,7 +82,10 @@ impl WasmWordPieceTokenizer {
     /// Parses UTF-8 `vocab.txt` bytes.
     #[wasm_bindgen(constructor)]
     pub fn new(vocab: &[u8], lowercase: bool) -> Result<WasmWordPieceTokenizer, JsError> {
-        let opts = WordPieceOptions { lowercase, ..Default::default() };
+        let opts = WordPieceOptions {
+            lowercase,
+            ..Default::default()
+        };
         let inner = WordPieceTokenizer::from_vocab_bytes_with_options(vocab, opts)
             .map_err(|e| JsError::new(&e.to_string()))?;
         Ok(Self { inner })
@@ -88,14 +93,16 @@ impl WasmWordPieceTokenizer {
 
     /// Encodes text without padding.
     pub fn encode(&self, text: &str, max_len: usize) -> Result<WasmEncodedInput, JsError> {
-        self.inner.encode(text, max_len)
+        self.inner
+            .encode(text, max_len)
             .map(WasmEncodedInput::new)
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Encodes text and pads to exactly `max_len`.
     pub fn encode_padded(&self, text: &str, max_len: usize) -> Result<WasmEncodedInput, JsError> {
-        self.inner.encode_padded(text, max_len)
+        self.inner
+            .encode_padded(text, max_len)
             .map(WasmEncodedInput::new)
             .map_err(|e| JsError::new(&e.to_string()))
     }
@@ -112,16 +119,24 @@ pub struct WasmEncodedInput {
     inner: EncodedInput,
 }
 impl WasmEncodedInput {
-    fn new(inner: EncodedInput) -> Self { Self { inner } }
+    fn new(inner: EncodedInput) -> Self {
+        Self { inner }
+    }
 }
 #[wasm_bindgen]
 impl WasmEncodedInput {
     /// Token ids including `[CLS]` and `[SEP]`.
-    pub fn input_ids(&self) -> Box<[u32]> { self.inner.input_ids.clone().into_boxed_slice() }
+    pub fn input_ids(&self) -> Box<[u32]> {
+        self.inner.input_ids.clone().into_boxed_slice()
+    }
     /// BERT segment ids.
-    pub fn token_type_ids(&self) -> Box<[u32]> { self.inner.token_type_ids.clone().into_boxed_slice() }
+    pub fn token_type_ids(&self) -> Box<[u32]> {
+        self.inner.token_type_ids.clone().into_boxed_slice()
+    }
     /// Attention mask: `1` for real, `0` for padding.
-    pub fn attention_mask(&self) -> Box<[u32]> { self.inner.attention_mask.clone().into_boxed_slice() }
+    pub fn attention_mask(&self) -> Box<[u32]> {
+        self.inner.attention_mask.clone().into_boxed_slice()
+    }
 }
 
 // ─── BPE tokenizer ────────────────────────────────────────────────────────────
@@ -144,7 +159,8 @@ impl WasmBpeTokenizer {
 
     /// Encodes text into token ids (including EOS if present in vocab).
     pub fn encode(&self, text: &str, max_len: usize) -> Result<Box<[u32]>, JsError> {
-        self.inner.encode(text, max_len)
+        self.inner
+            .encode(text, max_len)
             .map(|e| e.input_ids.into_boxed_slice())
             .map_err(|e| JsError::new(&e.to_string()))
     }
@@ -193,9 +209,14 @@ impl WasmBertModel {
         prefix: &str,
     ) -> Result<WasmBertModel, JsError> {
         let config = BertConfig {
-            hidden_size, num_hidden_layers, num_attention_heads,
-            intermediate_size, vocab_size, max_position_embeddings,
-            type_vocab_size, layer_norm_eps: 1e-12,
+            hidden_size,
+            num_hidden_layers,
+            num_attention_heads,
+            intermediate_size,
+            vocab_size,
+            max_position_embeddings,
+            type_vocab_size,
+            layer_norm_eps: 1e-12,
         };
         let file = ModelFile::parse(bytes).map_err(|e| JsError::new(&e.to_string()))?;
         let inner = BertModel::from_safetensors(&file, config, prefix)
@@ -206,8 +227,8 @@ impl WasmBertModel {
     /// Loads a BERT model from safetensors bytes + `config.json` text.
     /// The tensor prefix is auto-detected.
     pub fn from_config(bytes: &[u8], config_json: &str) -> Result<WasmBertModel, JsError> {
-        let config = BertConfig::from_config_json(config_json)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let config =
+            BertConfig::from_config_json(config_json).map_err(|e| JsError::new(&e.to_string()))?;
         let file = ModelFile::parse(bytes).map_err(|e| JsError::new(&e.to_string()))?;
         let inner = BertModel::from_safetensors_auto(&file, config)
             .map_err(|e| JsError::new(&e.to_string()))?;
@@ -216,43 +237,53 @@ impl WasmBertModel {
 
     /// Runs the encoder, returns flat `[seq_len × hidden_size]` hidden states.
     pub fn forward(&self, input_ids: &[u32]) -> Result<Box<[f32]>, JsError> {
-        self.inner.try_forward(input_ids, None)
+        self.inner
+            .try_forward(input_ids, None)
             .map(|t| t.data().to_vec().into_boxed_slice())
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Encoder + mean-pool → `[hidden_size]` embedding.
     pub fn embed(&self, input_ids: &[u32]) -> Result<Box<[f32]>, JsError> {
-        self.inner.try_embed_sentence(input_ids, None, None)
+        self.inner
+            .try_embed_sentence(input_ids, None, None)
             .map(|t| t.data().to_vec().into_boxed_slice())
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Encoder + mean-pool with an explicit attention mask.
     pub fn embed_with_mask(
-        &self, input_ids: &[u32], attention_mask: &[u32],
+        &self,
+        input_ids: &[u32],
+        attention_mask: &[u32],
     ) -> Result<Box<[f32]>, JsError> {
-        self.inner.try_embed_sentence(input_ids, None, Some(attention_mask))
+        self.inner
+            .try_embed_sentence(input_ids, None, Some(attention_mask))
             .map(|t| t.data().to_vec().into_boxed_slice())
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Encoder + mean-pool from a tokenizer output.
     pub fn embed_encoded(&self, encoded: &WasmEncodedInput) -> Result<Box<[f32]>, JsError> {
-        self.inner.try_embed_sentence(
-            &encoded.inner.input_ids,
-            Some(&encoded.inner.token_type_ids),
-            Some(&encoded.inner.attention_mask),
-        )
-        .map(|t| t.data().to_vec().into_boxed_slice())
-        .map_err(|e| JsError::new(&e.to_string()))
+        self.inner
+            .try_embed_sentence(
+                &encoded.inner.input_ids,
+                Some(&encoded.inner.token_type_ids),
+                Some(&encoded.inner.attention_mask),
+            )
+            .map(|t| t.data().to_vec().into_boxed_slice())
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Tokenizes text and returns one pooled embedding.
     pub fn embed_text(
-        &self, tokenizer: &WasmWordPieceTokenizer, text: &str, max_len: usize,
+        &self,
+        tokenizer: &WasmWordPieceTokenizer,
+        text: &str,
+        max_len: usize,
     ) -> Result<Box<[f32]>, JsError> {
-        self.inner.embed_text(&tokenizer.inner, text, max_len)
+        self.inner
+            .embed_text(&tokenizer.inner, text, max_len)
             .map(|t| t.data().to_vec().into_boxed_slice())
             .map_err(|e| JsError::new(&e.to_string()))
     }
@@ -271,11 +302,11 @@ impl WasmGpt2Model {
     /// Loads a GPT-2 model from safetensors bytes + `config.json` text.
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8], config_json: &str) -> Result<WasmGpt2Model, JsError> {
-        let config = Gpt2Config::from_config_json(config_json)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let config =
+            Gpt2Config::from_config_json(config_json).map_err(|e| JsError::new(&e.to_string()))?;
         let file = ModelFile::parse(bytes).map_err(|e| JsError::new(&e.to_string()))?;
-        let inner = Gpt2Model::from_safetensors(&file, config)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let inner =
+            Gpt2Model::from_safetensors(&file, config).map_err(|e| JsError::new(&e.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -292,7 +323,9 @@ impl WasmGpt2Model {
         prompt: &str,
         max_new_tokens: usize,
     ) -> Result<String, JsError> {
-        let enc = tokenizer.inner.encode(prompt, self.inner.config.max_position_embeddings)
+        let enc = tokenizer
+            .inner
+            .encode(prompt, self.inner.config.max_position_embeddings)
             .map_err(|e| JsError::new(&e.to_string()))?;
         let all_ids = self.inner.generate_greedy(&enc.input_ids, max_new_tokens);
         let new_ids = &all_ids[enc.input_ids.len()..];
@@ -313,11 +346,11 @@ impl WasmT5Model {
     /// Loads a T5 model from safetensors bytes + `config.json` text.
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8], config_json: &str) -> Result<WasmT5Model, JsError> {
-        let config = T5Config::from_config_json(config_json)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let config =
+            T5Config::from_config_json(config_json).map_err(|e| JsError::new(&e.to_string()))?;
         let file = ModelFile::parse(bytes).map_err(|e| JsError::new(&e.to_string()))?;
-        let inner = T5Model::from_safetensors(&file, config)
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let inner =
+            T5Model::from_safetensors(&file, config).map_err(|e| JsError::new(&e.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -328,7 +361,9 @@ impl WasmT5Model {
         text: &str,
         max_len: usize,
     ) -> Result<Box<[f32]>, JsError> {
-        let enc = tokenizer.inner.encode(text, max_len)
+        let enc = tokenizer
+            .inner
+            .encode(text, max_len)
             .map_err(|e| JsError::new(&e.to_string()))?;
         let out = self.inner.encode(&enc.input_ids);
         Ok(out.data().to_vec().into_boxed_slice())
@@ -341,7 +376,9 @@ impl WasmT5Model {
         input_text: &str,
         max_new_tokens: usize,
     ) -> Result<String, JsError> {
-        let enc = tokenizer.inner.encode(input_text, 512)
+        let enc = tokenizer
+            .inner
+            .encode(input_text, 512)
             .map_err(|e| JsError::new(&e.to_string()))?;
         let out_ids = self.inner.generate_greedy(&enc.input_ids, max_new_tokens);
         Ok(tokenizer.inner.decode(&out_ids))
@@ -396,7 +433,8 @@ impl WasmPipeline {
 
     /// Tokenises `text` and returns one mean-pooled embedding `[hidden_size]`.
     pub fn embed(&self, text: &str, max_len: usize) -> Result<Box<[f32]>, JsError> {
-        self.inner.embed(text, max_len)
+        self.inner
+            .embed(text, max_len)
             .map(|t| t.data().to_vec().into_boxed_slice())
             .map_err(|e| JsError::new(&e.to_string()))
     }
@@ -406,9 +444,14 @@ impl WasmPipeline {
     #[wasm_bindgen(js_name = embedBatch)]
     pub fn embed_batch(&self, texts: Vec<String>, max_len: usize) -> Result<Box<[f32]>, JsError> {
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-        let embeddings = self.inner.embed_batch(&refs, max_len)
+        let embeddings = self
+            .inner
+            .embed_batch(&refs, max_len)
             .map_err(|e| JsError::new(&e.to_string()))?;
-        let flat: Vec<f32> = embeddings.into_iter().flat_map(|t| t.data().to_vec()).collect();
+        let flat: Vec<f32> = embeddings
+            .into_iter()
+            .flat_map(|t| t.data().to_vec())
+            .collect();
         Ok(flat.into_boxed_slice())
     }
 
@@ -417,14 +460,16 @@ impl WasmPipeline {
     /// Greedy text generation. For GPT-2: continues the prompt.
     /// For T5: prompt is the encoder input (include task prefix, e.g. `"translate English to French: Hello"`).
     pub fn generate(&self, prompt: &str, max_new_tokens: usize) -> Result<String, JsError> {
-        self.inner.generate(prompt, max_new_tokens)
+        self.inner
+            .generate(prompt, max_new_tokens)
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// T5-only: runs the encoder and returns hidden states `[seq_len × d_model]`.
     #[wasm_bindgen(js_name = encodeT5)]
     pub fn encode_t5(&self, text: &str, max_len: usize) -> Result<Box<[f32]>, JsError> {
-        self.inner.encode_t5(text, max_len)
+        self.inner
+            .encode_t5(text, max_len)
             .map(|t| t.data().to_vec().into_boxed_slice())
             .map_err(|e| JsError::new(&e.to_string()))
     }

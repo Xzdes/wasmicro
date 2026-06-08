@@ -53,5 +53,5 @@ pub use loader::{Dtype, ModelFile, TensorView};
 pub use pipeline::Pipeline;
 pub use quant::{QuantizedTensorI8, QuantizedTensorQ4, QuantizedTensorU8};
 pub use tensor::{Shape, Tensor};
-pub use tokenizer::{EncodedInput, WordPieceOptions, WordPieceTokenizer};
 pub use tokenizer::bpe::BpeTokenizer;
+pub use tokenizer::{EncodedInput, WordPieceOptions, WordPieceTokenizer};
