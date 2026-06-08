@@ -281,10 +281,7 @@ impl T5Model {
         let mut decoder_layers = Vec::with_capacity(config.num_decoder_layers);
         for i in 0..config.num_decoder_layers {
             let dec_rel_bias = if i == 0 {
-                load(&format!(
-                    "decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight"
-                ))
-                .ok()
+                load("decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight").ok()
             } else {
                 None
             };
