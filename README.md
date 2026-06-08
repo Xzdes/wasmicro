@@ -38,7 +38,7 @@ project that downloads the real models and compares numbers against PyTorch.
 
 ```toml
 [dependencies]
-wasmicro = "0.3.0"
+wasmicro = "0.3.1"
 ```
 
 ### JavaScript / npm
